@@ -391,7 +391,87 @@ class RosterTab(QWidget):
 
 
 # ==========================================================================================
-#  SEKME 3 / 4 — GÖRSELLER (takım logoları / oyuncu fotoğrafları) — ortak satır bileşeni
+#  SEKME 3 — RÖPORTAJ TAKVİMİ (basın günleri: kim, hangi hafta, hangi mecra için alındı)
+# ==========================================================================================
+
+class PressTab(QWidget):
+    COLUMNS = ["Hafta", "Beinsports", "Antrenman"]
+
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        hint = QLabel("Her satır bir hafta/maç dönemi. 'Beinsports' ve 'Antrenman' sütunlarına "
+                       "o hafta röportaj alınan oyuncuların adlarını yaz (birden fazlaysa \" - \" ile "
+                       "ayır). Bitince 'Kaydet'e bas.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.table = QTableWidget(0, len(self.COLUMNS))
+        self.table.setHorizontalHeaderLabels(self.COLUMNS)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        stretch_header(self.table)
+        layout.addWidget(self.table, 1)
+
+        btn_row = QHBoxLayout()
+        add_btn = make_btn("+ Hafta ekle")
+        add_btn.clicked.connect(self.add_row)
+        del_btn = make_btn("Seçili satırı sil", variant="dangerBtn")
+        del_btn.clicked.connect(self.delete_row)
+        save_btn = make_btn("Kaydet", 36, "primaryBtn")
+        save_btn.clicked.connect(self.save)
+        btn_row.addWidget(add_btn)
+        btn_row.addWidget(del_btn)
+        btn_row.addStretch(1)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
+
+        self.status = QLabel("")
+        self.status.setObjectName("status")
+        layout.addWidget(self.status)
+
+        self.reload()
+
+    def reload(self):
+        raw = ks_data.load_raw()
+        self.table.setRowCount(0)
+        for p in raw.get("press", []):
+            self._append_row(p.get("hafta", ""), p.get("beinsports", ""), p.get("antrenman", ""))
+        self.status.setText(f"{self.table.rowCount()} hafta yüklendi.")
+
+    def _append_row(self, hafta, beinsports, antrenman):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        for col, value in enumerate([hafta, beinsports, antrenman]):
+            self.table.setItem(row, col, QTableWidgetItem(str(value or "")))
+
+    def add_row(self):
+        self._append_row("", "", "")
+
+    def delete_row(self):
+        rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
+        for r in rows:
+            self.table.removeRow(r)
+
+    def save(self):
+        press = []
+        for row in range(self.table.rowCount()):
+            def cell(c):
+                item = self.table.item(row, c)
+                return item.text().strip() if item else ""
+            hafta, beinsports, antrenman = cell(0), cell(1), cell(2)
+            if not hafta:
+                continue
+            press.append({"hafta": hafta, "beinsports": beinsports, "antrenman": antrenman})
+        ks_data.save_press(press)
+        self.status.setText(f"Kaydedildi — {len(press)} hafta.")
+
+
+# ==========================================================================================
+#  SEKME 4 / 5 — GÖRSELLER (takım logoları / oyuncu fotoğrafları) — ortak satır bileşeni
 # ==========================================================================================
 
 class ImageListTab(QWidget):
@@ -638,6 +718,7 @@ class AdminWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.fixtures_tab = FixturesTab()
         self.roster_tab = RosterTab()
+        self.press_tab = PressTab()
         self.logos_tab = ImageListTab(
             "Fikstürdeki her rakip takım için bir logo seç. Önce 'Fikstür' sekmesinde maçları "
             "ekleyip kaydetmelisin ki takım burada listelensin.",
@@ -652,6 +733,7 @@ class AdminWindow(QMainWindow):
         )
         self.tabs.addTab(self.fixtures_tab, "Fikstür")
         self.tabs.addTab(self.roster_tab, "Kadro")
+        self.tabs.addTab(self.press_tab, "Röportaj Takvimi")
         self.tabs.addTab(self.logos_tab, "Takım Logoları")
         self.tabs.addTab(self.photos_tab, "Oyuncu Fotoğrafları")
         self.tabs.currentChanged.connect(self._on_tab_changed)

@@ -70,10 +70,23 @@ DEFAULT_PLAYERS = [
 ]
 
 
+# --- Basın günleri / röportaj takvimi (Kocaelispor beIN Sports röportaj takviminden) --------
+DEFAULT_PRESS = [
+    {"hafta": "1. Başakşehir", "beinsports": "Metehan Altunbaş - Uğur Yıldız", "antrenman": ""},
+    {"hafta": "2. Amed Maç Haftası", "beinsports": "Maglica - Berkan", "antrenman": "Zoukrou ve Emir Ortakaya"},
+    {"hafta": "3. Konya Maç Haftası", "beinsports": "Uğur Kaan - Metehan Altunbaş - Massadio Haidara",
+     "antrenman": "Emir Ortakaya - Serhat Öztaşdelen"},
+    {"hafta": "4. Samsun Maç Haftası", "beinsports": "", "antrenman": "Gulliksen - Ayé"},
+    {"hafta": "Beşiktaş haftası", "beinsports": "Emir - Susoho", "antrenman": "Emir"},
+    {"hafta": "Göztepe haftası", "beinsports": "", "antrenman": "Susoho"},
+]
+
+
 def _default_data() -> dict:
     return {
         "fixtures": [dict(f) for f in DEFAULT_FIXTURES],
         "players": [dict(p) for p in DEFAULT_PLAYERS],
+        "press": [dict(p) for p in DEFAULT_PRESS],
     }
 
 
@@ -91,7 +104,7 @@ def parse_date(text):
 
 
 def save_raw(data: dict) -> None:
-    """data: {"fixtures": [...], "players": [...]} — tüm tarihler ISO metin ("YYYY-AA-GG")."""
+    """data: {"fixtures": [...], "players": [...], "press": [...]} — tarihler ISO metin ("YYYY-AA-GG")."""
     DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = DATA_PATH.with_suffix(".json.tmp")
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -108,6 +121,7 @@ def load_raw() -> dict:
                 data = json.load(fh)
             data.setdefault("fixtures", [])
             data.setdefault("players", [])
+            data.setdefault("press", [])
             return data
         except (OSError, json.JSONDecodeError):
             pass
@@ -138,13 +152,28 @@ def load_data() -> dict:
             "name": name, "dob": _parse_date(p.get("dob")),
             "no": p.get("no"), "pos": p.get("pos", ""),
         })
-    return {"fixtures": fixtures, "players": players}
+    press = []
+    for p in raw.get("press", []):
+        hafta = (p.get("hafta") or "").strip()
+        if not hafta:
+            continue
+        press.append({
+            "hafta": hafta, "beinsports": p.get("beinsports", ""), "antrenman": p.get("antrenman", ""),
+        })
+    return {"fixtures": fixtures, "players": players, "press": press}
 
 
 def save_fixtures(fixtures: list) -> None:
     """fixtures: [{"home","away","date" (ISO metin),"time","stadium"}, ...]"""
     raw = load_raw()
     raw["fixtures"] = fixtures
+    save_raw(raw)
+
+
+def save_press(press: list) -> None:
+    """press: [{"hafta","beinsports","antrenman"}, ...]"""
+    raw = load_raw()
+    raw["press"] = press
     save_raw(raw)
 
 

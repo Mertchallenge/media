@@ -217,6 +217,7 @@ _SHARED_DATA = ks_data.load_data()
 MANUAL_FIXTURES = _SHARED_DATA["fixtures"]
 _PLAYERS_DATA = _SHARED_DATA["players"]
 MANUAL_BIRTHDAYS = [{"name": p["name"], "date": p["dob"]} for p in _PLAYERS_DATA if p.get("dob")]
+PRESS_WEEKS = _SHARED_DATA["press"]
 
 
 # ==========================================================================================
@@ -2288,10 +2289,11 @@ PAGE_META = [
     ("Yüz Ayıklama", "Referans ve medya klasörlerinden otomatik oyuncu ayıklama"),
     ("Maçlar", "Fikstür, maç detayı ve yapay zekâ yorumu"),
     ("Doğum Günleri", "Kadronun yaklaşan doğum günleri"),
+    ("Basın Günleri", "Hangi oyuncunun hangi hafta röportaj aldığının takvimi"),
     ("Raporlar", "Geçmiş ayıklama işlemleri"),
     ("Ayarlar", "Yapay zekâ ve uygulama ayarları"),
 ]
-PAGE_HOME, PAGE_EXTRACT, PAGE_MATCHES, PAGE_BIRTHDAYS, PAGE_REPORTS, PAGE_SETTINGS = range(6)
+PAGE_HOME, PAGE_EXTRACT, PAGE_MATCHES, PAGE_BIRTHDAYS, PAGE_PRESS, PAGE_REPORTS, PAGE_SETTINGS = range(7)
 
 
 # ==========================================================================================
@@ -2735,6 +2737,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._build_extract_page())     # PAGE_EXTRACT
         self.stack.addWidget(self._build_matches_page())     # PAGE_MATCHES
         self.stack.addWidget(self._build_birthdays_page())   # PAGE_BIRTHDAYS
+        self.stack.addWidget(self._build_press_page())       # PAGE_PRESS
         self.stack.addWidget(self._build_reports_page())     # PAGE_REPORTS
         self.stack.addWidget(self._build_settings_page())    # PAGE_SETTINGS
         content.addWidget(self.stack, 1)
@@ -2756,7 +2759,7 @@ class MainWindow(QMainWindow):
         self.nav_buttons: list[QToolButton] = []
         for index, (icon_name, label) in enumerate((
                 ("home", "Ana Sayfa"), ("image", "Ayıklama"), ("trophy", "Maçlar"), ("gift", "Doğum"),
-                ("report", "Raporlar"), ("sliders", "Ayarlar"))):
+                ("megaphone", "Basın"), ("report", "Raporlar"), ("sliders", "Ayarlar"))):
             btn = QToolButton()
             btn.setObjectName("navBtn")
             btn.setCheckable(True)
@@ -2863,6 +2866,8 @@ class MainWindow(QMainWindow):
             self._refresh_matches_page()
         elif index == PAGE_BIRTHDAYS:
             self._refresh_birthdays_page()
+        elif index == PAGE_PRESS:
+            self._refresh_press_page()
         elif index == PAGE_REPORTS:
             self._refresh_reports_page()
         elif index == PAGE_SETTINGS:
@@ -3629,6 +3634,63 @@ class MainWindow(QMainWindow):
             row_layout.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
             self.bd_rows_layout.addWidget(row)
         self.bd_rows_layout.addStretch(1)
+
+    # ==================================================================
+    # SAYFA 3b — BASIN GÜNLERİ (röportaj takvimi: kim hangi hafta röportaj aldı)
+    # ==================================================================
+    def _build_press_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        card, c_layout = self._card(spacing=10)
+        self.press_count_label = self._section_label("Röportaj Takvimi")
+        c_layout.addWidget(self.press_count_label)
+        note = QLabel("Düzenlemek için ayrı Admin Paneli'ni (admin.py) kullan — Röportaj Takvimi sekmesi.")
+        note.setObjectName("noteText")
+        note.setWordWrap(True)
+        c_layout.addWidget(note)
+        inner = QWidget()
+        self.press_rows_layout = QVBoxLayout(inner)
+        self.press_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.press_rows_layout.setSpacing(10)
+        c_layout.addWidget(self._scroll(inner), 1)
+        layout.addWidget(card, 1)
+        return page
+
+    def _refresh_press_page(self):
+        clear_layout(self.press_rows_layout)
+        weeks = PRESS_WEEKS
+        self.press_count_label.setText(turkish_upper(f"Röportaj Takvimi · {len(weeks)} hafta"))
+        if not weeks:
+            empty = QLabel("Henüz röportaj takvimi eklenmedi.")
+            empty.setObjectName("emptyHint")
+            self.press_rows_layout.addWidget(empty)
+        for w in weeks:
+            card = QFrame()
+            card.setObjectName("rowLine")
+            v = QVBoxLayout(card)
+            v.setContentsMargins(14, 12, 14, 12)
+            v.setSpacing(6)
+
+            title = QLabel(w.get("hafta", ""))
+            title.setObjectName("bdName")
+            v.addWidget(title)
+
+            beinsports = (w.get("beinsports") or "").strip()
+            antrenman = (w.get("antrenman") or "").strip()
+            bein_lab = QLabel(f"Beinsports:  {beinsports if beinsports else '—'}")
+            bein_lab.setObjectName("dateSub")
+            bein_lab.setWordWrap(True)
+            v.addWidget(bein_lab)
+            ant_lab = QLabel(f"Antrenman:  {antrenman if antrenman else '—'}")
+            ant_lab.setObjectName("dateSub")
+            ant_lab.setWordWrap(True)
+            v.addWidget(ant_lab)
+
+            self.press_rows_layout.addWidget(card)
+        self.press_rows_layout.addStretch(1)
 
     # SAYFA 4 — RAPORLAR (geçmiş işlemler)
     # ==================================================================
