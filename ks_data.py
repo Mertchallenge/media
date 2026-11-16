@@ -119,9 +119,15 @@ def load_raw() -> dict:
         try:
             with open(DATA_PATH, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
+            # "press" bu özellikten ÖNCE oluşturulmuş eski bir veri.json'da hiç yoktur.
+            # O durumda boş liste değil, Excel'den aktarılan varsayılan takvimle doldur ve
+            # dosyaya geri yaz — böylece eski bir veri.json'u olan kullanıcı veriyi kaybetmez.
+            missing_press = "press" not in data
             data.setdefault("fixtures", [])
             data.setdefault("players", [])
-            data.setdefault("press", [])
+            if missing_press:
+                data["press"] = [dict(p) for p in DEFAULT_PRESS]
+                save_raw(data)
             return data
         except (OSError, json.JSONDecodeError):
             pass

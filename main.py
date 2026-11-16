@@ -3653,7 +3653,7 @@ class MainWindow(QMainWindow):
         add_btn.setObjectName("outlineSmall")
         add_btn.setFixedHeight(32)
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        add_btn.clicked.connect(self._add_press_row)
+        add_btn.clicked.connect(lambda checked=False: self._add_press_row())
         head.addWidget(add_btn)
         save_btn = QPushButton("Kaydet")
         save_btn.setObjectName("aiBtn")
