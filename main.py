@@ -2591,6 +2591,52 @@ ROSTER = [
 ]
 ROSTER_BY_ID = {p["id"]: p for p in ROSTER}
 
+
+# --- Basın Günleri istatistiği: serbest metindeki isimleri kadroyla eşleştirip sayar ---------
+
+def _split_press_names(text: str) -> list:
+    if not text:
+        return []
+    cleaned = text
+    for sep in (" ve ", " VE ", "/", "&", "-", ","):
+        cleaned = cleaned.replace(sep, ",")
+    parts = [p.strip(" .") for p in cleaned.split(",")]
+    return [p for p in parts if p]
+
+
+def _match_roster_name(token: str) -> str:
+    """Serbest yazılmış bir ismi ('emir', 'Uğur Kaan' gibi) kadrodaki tam isimle eşleştirir.
+    Eşleşme yoksa yazıldığı hâliyle döner (kadro dışı biri olabilir)."""
+    slug = team_logo_slug(token)
+    if not slug:
+        return token.strip()
+    best, best_len = None, -1
+    for p in ROSTER:
+        full_slug = team_logo_slug(p["name"])
+        name_tokens = [team_logo_slug(t) for t in p["name"].split() if len(t) >= 3]
+        matched = (slug == full_slug or slug in full_slug or full_slug in slug
+                   or slug in name_tokens or any(len(nt) >= 4 and nt in slug for nt in name_tokens))
+        if matched and len(full_slug) > best_len:
+            best, best_len = p["name"], len(full_slug)
+    return best or token.strip()
+
+
+def press_stats() -> list:
+    """PRESS_WEEKS içindeki her ismi kadroyla eşleştirip kaç kez Beinsports, kaç kez Antrenman
+    röportajı aldığını sayar. En çok çıkandan en aza sıralı döner."""
+    counts: dict = {}
+    for w in PRESS_WEEKS:
+        for field, key in (("beinsports", "bein"), ("antrenman", "ant")):
+            for token in _split_press_names(w.get(field, "")):
+                name = _match_roster_name(token)
+                entry = counts.setdefault(name, {"bein": 0, "ant": 0})
+                entry[key] += 1
+    result = [{"name": n, "bein": c["bein"], "ant": c["ant"], "total": c["bein"] + c["ant"]}
+              for n, c in counts.items()]
+    result.sort(key=lambda r: (-r["total"], r["name"]))
+    return result
+
+
 STATUSES = ["Hazır", "Kısıtlı", "Sakat", "Rehab"]
 STATUS_COLORS = {  # durum: (yazı, zemin)
     "Hazır": ("#2FD69A", "#12291F"),
@@ -3640,11 +3686,30 @@ class MainWindow(QMainWindow):
     # ==================================================================
     def _build_press_page(self) -> QWidget:
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        outer_layout = QVBoxLayout(page)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
 
-        card, c_layout = self._card(spacing=10)
+        inner = QWidget()
+        outer_v = QVBoxLayout(inner)
+        outer_v.setContentsMargins(0, 0, 0, 0)
+        outer_v.setSpacing(16)
+
+        # --- İstatistik kartı: kim kaç kez Beinsports / Antrenman röportajı almış -----------
+        stats_card, s_layout = self._card(spacing=10)
+        s_layout.addWidget(self._section_label("Kim Kaç Kez Çıktı"))
+        stats_hint = QLabel("Hafta kartlarındaki isimlerden otomatik hesaplanır — kadroya "
+                             "dengeli dağıtmak için kullan.")
+        stats_hint.setObjectName("noteText")
+        stats_hint.setWordWrap(True)
+        s_layout.addWidget(stats_hint)
+        self.press_stats_layout = QVBoxLayout()
+        self.press_stats_layout.setSpacing(0)
+        s_layout.addLayout(self.press_stats_layout)
+        outer_v.addWidget(stats_card)
+
+        # --- Düzenlenebilir hafta kartları ----------------------------------------------------
+        weeks_card, c_layout = self._card(spacing=10)
         head = QHBoxLayout()
         self.press_count_label = self._section_label("Röportaj Takvimi")
         head.addWidget(self.press_count_label)
@@ -3673,12 +3738,14 @@ class MainWindow(QMainWindow):
         self.press_status.setObjectName("aiStatus")
         c_layout.addWidget(self.press_status)
 
-        inner = QWidget()
-        self.press_rows_layout = QVBoxLayout(inner)
+        rows_inner = QWidget()
+        self.press_rows_layout = QVBoxLayout(rows_inner)
         self.press_rows_layout.setContentsMargins(0, 0, 0, 0)
         self.press_rows_layout.setSpacing(10)
-        c_layout.addWidget(self._scroll(inner), 1)
-        layout.addWidget(card, 1)
+        c_layout.addWidget(rows_inner)
+        outer_v.addWidget(weeks_card)
+
+        outer_layout.addWidget(self._scroll(inner), 1)
         self._press_row_widgets = []
         return page
 
@@ -3692,21 +3759,43 @@ class MainWindow(QMainWindow):
             self._add_press_row(w.get("hafta", ""), w.get("beinsports", ""), w.get("antrenman", ""))
         if not weeks:
             self._add_press_row()
-        self.press_rows_layout.addStretch(1)
+        self._refresh_press_stats()
+
+    def _refresh_press_stats(self):
+        clear_layout(self.press_stats_layout)
+        stats = press_stats()
+        if not stats:
+            empty = QLabel("Henüz istatistik yok — bir hafta kartına isim yazıp kaydet.")
+            empty.setObjectName("emptyHint")
+            self.press_stats_layout.addWidget(empty)
+            return
+        for s in stats:
+            row = QFrame()
+            row.setObjectName("rowLine")
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 10, 0, 10)
+            h.setSpacing(10)
+            name_lab = QLabel(s["name"])
+            name_lab.setObjectName("bdName")
+            h.addWidget(name_lab, 1)
+            h.addWidget(make_chip(f"Beinsports · {s['bein']}", K_GREEN_HI, K_GREEN_BG))
+            h.addWidget(make_chip(f"Antrenman · {s['ant']}", K_AMBER, K_AMBER_BG))
+            total_lab = QLabel(f"Toplam {s['total']}")
+            total_lab.setObjectName("dateSub")
+            total_lab.setFixedWidth(84)
+            total_lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            h.addWidget(total_lab)
+            self.press_stats_layout.addWidget(row)
 
     def _add_press_row(self, hafta: str = "", beinsports: str = "", antrenman: str = ""):
-        # addStretch(1) her zaman en sonda olmalı; yeni satırı stretch'ten önce ekle.
-        stretch_index = self.press_rows_layout.count()
-        while stretch_index > 0 and self.press_rows_layout.itemAt(stretch_index - 1).widget() is None:
-            stretch_index -= 1
-
         row = QFrame()
         row.setObjectName("rowLine")
         v = QVBoxLayout(row)
         v.setContentsMargins(14, 12, 14, 12)
-        v.setSpacing(8)
+        v.setSpacing(10)
 
         top = QHBoxLayout()
+        top.setSpacing(10)
         hafta_edit = QLineEdit(hafta)
         hafta_edit.setPlaceholderText("Hafta (ör. 5. Samsun Maç Haftası)")
         hafta_edit.setObjectName("bdName")
@@ -3718,36 +3807,37 @@ class MainWindow(QMainWindow):
         top.addWidget(del_btn)
         v.addLayout(top)
 
-        bein_row = QHBoxLayout()
-        bein_row.addWidget(self._text("Beinsports:", "dateSub", wrap=False))
-        bein_edit = QLineEdit(beinsports)
-        bein_edit.setPlaceholderText("Oyuncu adları — ör. Berkan Kutlu - Show")
-        bein_row.addWidget(bein_edit, 1)
-        v.addLayout(bein_row)
+        cols = QHBoxLayout()
+        cols.setSpacing(16)
 
-        ant_row = QHBoxLayout()
-        ant_row.addWidget(self._text("Antrenman:", "dateSub", wrap=False))
+        bein_col = QVBoxLayout()
+        bein_col.setSpacing(4)
+        bein_col.addWidget(self._section_label("Beinsports"))
+        bein_edit = QLineEdit(beinsports)
+        bein_edit.setPlaceholderText("ör. Berkan Kutlu - Show")
+        bein_col.addWidget(bein_edit)
+        cols.addLayout(bein_col, 1)
+
+        ant_col = QVBoxLayout()
+        ant_col.setSpacing(4)
+        ant_col.addWidget(self._section_label("Antrenman"))
         ant_edit = QLineEdit(antrenman)
-        ant_edit.setPlaceholderText("Oyuncu adları — ör. Emir Ortakaya")
-        ant_row.addWidget(ant_edit, 1)
-        v.addLayout(ant_row)
+        ant_edit.setPlaceholderText("ör. Emir Ortakaya")
+        ant_col.addWidget(ant_edit)
+        cols.addLayout(ant_col, 1)
+
+        v.addLayout(cols)
 
         entry = {"frame": row, "hafta": hafta_edit, "bein": bein_edit, "ant": ant_edit}
         del_btn.clicked.connect(lambda checked=False, e=entry: self._remove_press_row(e))
         self._press_row_widgets.append(entry)
-        self.press_rows_layout.insertWidget(stretch_index, row)
+        self.press_rows_layout.addWidget(row)
 
     def _remove_press_row(self, entry: dict):
         entry["frame"].setParent(None)
         entry["frame"].deleteLater()
         if entry in self._press_row_widgets:
             self._press_row_widgets.remove(entry)
-
-    def _text(self, text: str, object_name: str = "emptyHint", wrap: bool = True) -> QLabel:
-        label = QLabel(text)
-        label.setObjectName(object_name)
-        label.setWordWrap(wrap)
-        return label
 
     def _save_press_page(self):
         global PRESS_WEEKS
@@ -3765,6 +3855,7 @@ class MainWindow(QMainWindow):
         PRESS_WEEKS = weeks
         self.press_count_label.setText(turkish_upper(f"Röportaj Takvimi · {len(weeks)} hafta"))
         self.press_status.setText(f"Kaydedildi — {len(weeks)} hafta.")
+        self._refresh_press_stats()
 
     # SAYFA 4 — RAPORLAR (geçmiş işlemler)
     # ==================================================================
