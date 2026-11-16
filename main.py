@@ -1392,14 +1392,15 @@ def get_club_logo_pixmap(size: int):
 
 
 # --- Rakip takım görselleri (PNG) ---------------------------------------------------------
-# main.py ile aynı klasörde bir "takim_logolari" klasörü oluşturup, her takım için düz bir PNG
-# (tercihen şeffaf arka planlı) koyarsan o takımın amblemi otomatik kullanılır. Dosya adı, takım
-# adının küçük harfe çevrilip Türkçe karakterleri sadeleştirilmiş hâlidir, örn:
-#   "Fenerbahçe" -> takim_logolari/fenerbahce.png
-#   "Çorum FK"   -> takim_logolari/corum_fk.png
+# main.py ile TAM OLARAK AYNI klasörde "takim_logolari" (ya da "logolar"/"logos") adında bir
+# klasör oluşturup, her takım için düz bir PNG (tercihen şeffaf arka planlı) koyarsan o takımın
+# amblemi otomatik kullanılır. Dosya adı, takım adının küçük harfe çevrilip Türkçe karakterleri
+# sadeleştirilmiş hâlidir, örn:
+#   "Fenerbahçe" -> fenerbahce.png
+#   "Çorum FK"   -> corum_fk.png
 # Bir takım için dosya yoksa, mevcut üç harfli rozet (TEAM_ABBR) otomatik olarak kullanılmaya
 # devam eder — hiçbir şey kırılmaz.
-TEAM_LOGOS_DIRNAME = "takim_logolari"
+TEAM_LOGOS_DIRNAMES = ("takim_logolari", "logolar", "logos")
 _team_logo_pixmap_cache: dict = {}
 
 _TR_SLUG_MAP = str.maketrans({
@@ -1417,9 +1418,14 @@ def team_logo_slug(name: str) -> str:
 
 
 def team_logo_source_path(name: str):
-    base = Path(__file__).resolve().parent / TEAM_LOGOS_DIRNAME
-    candidate = base / f"{team_logo_slug(name)}.png"
-    return candidate if candidate.is_file() else None
+    app_dir = Path(__file__).resolve().parent
+    slug = team_logo_slug(name)
+    for dirname in TEAM_LOGOS_DIRNAMES:
+        for ext in ("png", "PNG"):
+            candidate = app_dir / dirname / f"{slug}.{ext}"
+            if candidate.is_file():
+                return candidate
+    return None
 
 
 def get_team_logo_pixmap(name: str, size: int):
