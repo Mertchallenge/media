@@ -85,6 +85,8 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime, date, timedelta
 
+import ks_data  # main.py/admin.py arasında paylaşılan fikstür+kadro veri katmanı (veri.json)
+
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QUrl, QTimer, QSize, QRectF, QPointF, QByteArray,
     QEvent, QObject, QDate, QTime
@@ -206,56 +208,15 @@ TURKISH_MONTHS = {
 # iç saha mı deplasman mı olduğu otomatik hesaplanır.
 KULUP_ADI = "Kocaelispor"
 
-# "stadium" alanı ev sahibi takımın sahasıdır — fikstür gibi elle girilir/güncellenir.
-# Kocaelispor'un kendi sahası sponsor adı değiştikçe güncellenebilir; diğerleri de aynı şekilde.
-KOCAELISPOR_STADIUM = "Kocaeli Stadyumu"
-
-MANUAL_FIXTURES = [
-    {"home": "Beşiktaş",      "away": "Kocaelispor", "date": date(2026, 10, 11), "time": "19:00", "stadium": "Tüpraş Stadyumu"},
-    {"home": "Kocaelispor",   "away": "Göztepe",      "date": date(2026, 10, 18), "time": "16:00", "stadium": KOCAELISPOR_STADIUM},
-    {"home": "Alanyaspor",    "away": "Kocaelispor", "date": date(2026, 10, 23), "time": "20:00", "stadium": "Bahçeşehir Okulları Stadyumu"},
-    {"home": "Kocaelispor",   "away": "Rizespor",     "date": date(2026, 10, 31), "time": "16:00", "stadium": KOCAELISPOR_STADIUM},
-    {"home": "Eyüpspor",      "away": "Kocaelispor", "date": date(2026, 11, 7),  "time": "13:30", "stadium": "Pendik Stadyumu"},
-    {"home": "Kocaelispor",   "away": "Fenerbahçe",   "date": date(2026, 11, 21), "time": "19:00", "stadium": KOCAELISPOR_STADIUM},
-    {"home": "Çorum FK",      "away": "Kocaelispor", "date": date(2026, 11, 29), "time": "13:30", "stadium": "Çorum Stadyumu"},
-    {"home": "Erzurumspor",   "away": "Kocaelispor", "date": date(2026, 12, 6),  "time": "13:30", "stadium": "Kazım Karabekir Stadyumu"},
-    {"home": "Kocaelispor",   "away": "Trabzonspor",  "date": date(2026, 12, 13), "time": "13:30", "stadium": KOCAELISPOR_STADIUM},
-    {"home": "Gençlerbirliği", "away": "Kocaelispor", "date": date(2026, 12, 21), "time": "20:00", "stadium": "Eryaman Stadyumu"},
-]
-
-# --- Doğum günü verisi (ELLE GİRİLEN, sabit liste — Transfermarkt kadro sayfasından) --------
-# Güncellemek için: yeni bir kadro ekran görüntüsü gönder, Claude listeyi günceller.
-MANUAL_BIRTHDAYS = [
-    {"name": "Serhat Öztaşdelen",     "date": date(2004, 12, 9)},
-    {"name": "Aleksandar Jovanović",  "date": date(1992, 12, 6)},
-    {"name": "Onurcan Piri",          "date": date(1994, 9, 28)},
-    {"name": "Talha Polat",           "date": date(2006, 11, 17)},
-    {"name": "Tanguy Zoukrou",        "date": date(2003, 5, 7)},
-    {"name": "Matej Maglica",         "date": date(1998, 9, 25)},
-    {"name": "Emir Ortakaya",         "date": date(2004, 6, 22)},
-    {"name": "Onur Öztonga",          "date": date(2000, 1, 6)},
-    {"name": "Massadio Haïdara",      "date": date(1992, 12, 2)},
-    {"name": "Muharrem Cinan",        "date": date(1998, 5, 13)},
-    {"name": "Anfernee Dijksteel",    "date": date(1996, 10, 27)},
-    {"name": "Uğur Kaan Yıldız",      "date": date(2002, 8, 6)},
-    {"name": "Show",                  "date": date(1999, 3, 6)},
-    {"name": "Mahamadou Susoho",      "date": date(2005, 1, 20)},
-    {"name": "Hulusi Destici",        "date": date(2008, 8, 6)},
-    {"name": "Berkan Kutlu",          "date": date(1998, 1, 25)},
-    {"name": "Tayfur Bingöl",         "date": date(1993, 1, 11)},
-    {"name": "Ege Bilim",             "date": date(2006, 4, 14)},
-    {"name": "Tobias Gulliksen",      "date": date(2003, 7, 9)},
-    {"name": "Rigoberto Rivas",       "date": date(1998, 7, 31)},
-    {"name": "Makana Baku",           "date": date(1998, 4, 8)},
-    {"name": "Haydar Karataş",        "date": date(2007, 3, 13)},
-    {"name": "Gonçalo Sousa",         "date": date(2006, 6, 30)},
-    {"name": "Dan Agyei",             "date": date(1997, 6, 1)},
-    {"name": "Bedirhan Yıldız",       "date": date(2005, 1, 30)},
-    {"name": "Metehan Altunbaş",      "date": date(2003, 1, 7)},
-    {"name": "Florian Ayé",           "date": date(1997, 1, 19)},
-    {"name": "Bruno Petkovic",        "date": date(1994, 9, 16)},
-    {"name": "Arda Özyar",            "date": date(2007, 4, 16)},
-]
+# Fikstür ve kadro/doğum günü verisi artık burada elle tutulmuyor — "ks_data.py" aracılığıyla
+# main.py ile AYNI klasördeki "veri.json" dosyasından okunur. Bu dosyayı elle düzenlemek yerine
+# ayrı "Admin Paneli" (admin.py) uygulamasını kullan: fikstür, kadro, takım logoları ve oyuncu
+# fotoğrafları oradan eklenir/değiştirilir/silinir. "veri.json" yoksa ilk açılışta otomatik
+# oluşturulur (önceden burada elle yazılı olan fikstür/kadro kaybolmadan aktarılır).
+_SHARED_DATA = ks_data.load_data()
+MANUAL_FIXTURES = _SHARED_DATA["fixtures"]
+_PLAYERS_DATA = _SHARED_DATA["players"]
+MANUAL_BIRTHDAYS = [{"name": p["name"], "date": p["dob"]} for p in _PLAYERS_DATA if p.get("dob")]
 
 
 # ==========================================================================================
@@ -1473,58 +1434,8 @@ def get_team_logo_pixmap(name: str, size: int):
     return pixmap
 
 
-def team_logos_write_dir() -> Path:
-    """Yeni bir takım logosu kaydederken kullanılacak klasör: mevcut klasörlerden biri
-    varsa onu, yoksa 'takim_logolari' klasörünü (gerekirse oluşturarak) döndürür."""
-    app_dir = Path(__file__).resolve().parent
-    for dirname in TEAM_LOGOS_DIRNAMES:
-        d = app_dir / dirname
-        if d.is_dir():
-            return d
-    d = app_dir / TEAM_LOGOS_DIRNAMES[0]
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def set_team_logo(team_name: str, source_file: str) -> bool:
-    """Seçilen görseli PNG olarak takım logosu klasörüne kaydeder (var olanın üzerine yazar)."""
-    raw = QPixmap()
-    if not raw.load(source_file) or raw.isNull():
-        return False
-    old = team_logo_source_path(team_name)
-    if old is not None:
-        try:
-            old.unlink()
-        except OSError:
-            pass
-    target = team_logos_write_dir() / f"{team_logo_slug(team_name)}.png"
-    ok = raw.save(str(target), "PNG")
-    if ok:
-        _team_logo_pixmap_cache.clear()
-    return ok
-
-
-def remove_team_logo(team_name: str) -> bool:
-    path = team_logo_source_path(team_name)
-    if path is None:
-        return False
-    try:
-        path.unlink()
-    except OSError:
-        return False
-    _team_logo_pixmap_cache.clear()
-    return True
-
-
-def opponent_team_names() -> list:
-    """Fikstürde geçen, Kocaelispor dışındaki rakip takımların adlarını sırayla ve tekrarsız döndürür."""
-    names, seen = [], set()
-    for fx in MANUAL_FIXTURES:
-        for side in (fx.get("home", ""), fx.get("away", "")):
-            if side and side != KULUP_ADI and side not in seen:
-                seen.add(side)
-                names.append(side)
-    return names
+# Not: logo EKLEME/KALDIRMA artık burada değil — ayrı "Admin Paneli" (admin.py) uygulamasında.
+# main.py yalnızca yukarıdaki team_logo_source_path / get_team_logo_pixmap ile OKUR.
 
 
 TEAM_ABBR = {
@@ -1662,54 +1573,8 @@ def get_player_photo_pixmap(name: str, size: int):
     return pixmap
 
 
-def player_photos_write_dir() -> Path:
-    """Yeni bir oyuncu fotoğrafı kaydederken kullanılacak klasör: mevcut klasörlerden biri
-    (standart isim ya da içinde 'oyuncu' geçen bir klasör) varsa onu, yoksa
-    'oyuncu_fotograflari' klasörünü (gerekirse oluşturarak) döndürür."""
-    app_dir = Path(__file__).resolve().parent
-    for dirname in PLAYER_PHOTOS_DIRNAMES:
-        d = app_dir / dirname
-        if d.is_dir():
-            return d
-    try:
-        for entry in app_dir.iterdir():
-            if entry.is_dir() and ("oyuncu" in _name_slug(entry.name) or "player" in _name_slug(entry.name)):
-                return entry
-    except OSError:
-        pass
-    d = app_dir / PLAYER_PHOTOS_DIRNAMES[0]
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def set_player_photo(player_name: str, source_file: str) -> bool:
-    """Seçilen görseli PNG olarak oyuncu fotoğrafı klasörüne kaydeder (var olanın üzerine yazar)."""
-    raw = QPixmap()
-    if not raw.load(source_file) or raw.isNull():
-        return False
-    old = player_photo_source_path(player_name)
-    if old is not None:
-        try:
-            old.unlink()
-        except OSError:
-            pass
-    target = player_photos_write_dir() / f"{_name_slug(player_name)}.png"
-    ok = raw.save(str(target), "PNG")
-    if ok:
-        _player_photo_cache.clear()
-    return ok
-
-
-def remove_player_photo(player_name: str) -> bool:
-    path = player_photo_source_path(player_name)
-    if path is None:
-        return False
-    try:
-        path.unlink()
-    except OSError:
-        return False
-    _player_photo_cache.clear()
-    return True
+# Not: fotoğraf EKLEME/KALDIRMA artık burada değil — ayrı "Admin Paneli" (admin.py) uygulamasında.
+# main.py yalnızca yukarıdaki player_photo_source_path / get_player_photo_pixmap ile OKUR.
 
 
 def make_avatar_label(name: str, size: int, object_name: str) -> QLabel:
@@ -2423,11 +2288,10 @@ PAGE_META = [
     ("Yüz Ayıklama", "Referans ve medya klasörlerinden otomatik oyuncu ayıklama"),
     ("Maçlar", "Fikstür, maç detayı ve yapay zekâ yorumu"),
     ("Doğum Günleri", "Kadronun yaklaşan doğum günleri"),
-    ("Görseller", "Oyuncu fotoğrafları ve takım logolarını buradan ekle, değiştir ya da kaldır"),
     ("Raporlar", "Geçmiş ayıklama işlemleri"),
     ("Ayarlar", "Yapay zekâ ve uygulama ayarları"),
 ]
-PAGE_HOME, PAGE_EXTRACT, PAGE_MATCHES, PAGE_BIRTHDAYS, PAGE_MEDIA, PAGE_REPORTS, PAGE_SETTINGS = range(7)
+PAGE_HOME, PAGE_EXTRACT, PAGE_MATCHES, PAGE_BIRTHDAYS, PAGE_REPORTS, PAGE_SETTINGS = range(6)
 
 
 # ==========================================================================================
@@ -2710,25 +2574,8 @@ class PlayerPins:
 
 
 # ==========================================================================================
-# KADRO (mevcut doğum günü listesinden + Transfermarkt'taki forma no / mevki bilgisi)
+# KADRO (ks_data.py üzerinden "veri.json"dan okunur — Admin Paneli'nde düzenlenir)
 # ==========================================================================================
-
-ROSTER_INFO = {  # isim: (forma no, mevki) — kadro değişince burası güncellenir
-    "Serhat Öztaşdelen": (83, "Kaleci"), "Aleksandar Jovanović": (1, "Kaleci"),
-    "Onurcan Piri": (23, "Kaleci"), "Talha Polat": (None, "Kaleci"),
-    "Tanguy Zoukrou": (4, "Stoper"), "Matej Maglica": (6, "Stoper"),
-    "Emir Ortakaya": (5, "Stoper"), "Onur Öztonga": (41, "Stoper"),
-    "Massadio Haïdara": (21, "Sol bek"), "Muharrem Cinan": (3, "Sol bek"),
-    "Anfernee Dijksteel": (2, "Sağ bek"), "Uğur Kaan Yıldız": (22, "Sağ bek"),
-    "Show": (14, "Ön libero"), "Mahamadou Susoho": (20, "Ön libero"), "Hulusi Destici": (18, "Ön libero"),
-    "Berkan Kutlu": (10, "Merkez orta saha"), "Tayfur Bingöl": (75, "Merkez orta saha"),
-    "Ege Bilim": (27, "Merkez orta saha"), "Tobias Gulliksen": (8, "On numara"),
-    "Rigoberto Rivas": (99, "Sol kanat"), "Makana Baku": (32, "Sol kanat"), "Haydar Karataş": (19, "Sol kanat"),
-    "Gonçalo Sousa": (11, "Sağ kanat"), "Dan Agyei": (7, "Sağ kanat"), "Bedirhan Yıldız": (89, "Sağ kanat"),
-    "Metehan Altunbaş": (26, "Santrafor"), "Florian Ayé": (97, "Santrafor"),
-    "Bruno Petkovic": (9, "Santrafor"), "Arda Özyar": (17, "Santrafor"),
-}
-
 
 def slugify(name: str) -> str:
     folded = unicodedata.normalize("NFKD", name.replace("ı", "i").replace("İ", "I"))
@@ -2736,10 +2583,10 @@ def slugify(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-")
 
 
-ROSTER = []
-for _b in MANUAL_BIRTHDAYS:
-    _no, _pos = ROSTER_INFO.get(_b["name"], (None, ""))
-    ROSTER.append({"id": slugify(_b["name"]), "name": _b["name"], "no": _no, "pos": _pos, "dob": _b["date"]})
+ROSTER = [
+    {"id": slugify(p["name"]), "name": p["name"], "no": p.get("no"), "pos": p.get("pos", ""), "dob": p.get("dob")}
+    for p in _PLAYERS_DATA
+]
 ROSTER_BY_ID = {p["id"]: p for p in ROSTER}
 
 STATUSES = ["Hazır", "Kısıtlı", "Sakat", "Rehab"]
@@ -2888,7 +2735,6 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._build_extract_page())     # PAGE_EXTRACT
         self.stack.addWidget(self._build_matches_page())     # PAGE_MATCHES
         self.stack.addWidget(self._build_birthdays_page())   # PAGE_BIRTHDAYS
-        self.stack.addWidget(self._build_media_page())       # PAGE_MEDIA
         self.stack.addWidget(self._build_reports_page())     # PAGE_REPORTS
         self.stack.addWidget(self._build_settings_page())    # PAGE_SETTINGS
         content.addWidget(self.stack, 1)
@@ -2910,7 +2756,7 @@ class MainWindow(QMainWindow):
         self.nav_buttons: list[QToolButton] = []
         for index, (icon_name, label) in enumerate((
                 ("home", "Ana Sayfa"), ("image", "Ayıklama"), ("trophy", "Maçlar"), ("gift", "Doğum"),
-                ("users", "Görseller"), ("report", "Raporlar"), ("sliders", "Ayarlar"))):
+                ("report", "Raporlar"), ("sliders", "Ayarlar"))):
             btn = QToolButton()
             btn.setObjectName("navBtn")
             btn.setCheckable(True)
@@ -3017,8 +2863,6 @@ class MainWindow(QMainWindow):
             self._refresh_matches_page()
         elif index == PAGE_BIRTHDAYS:
             self._refresh_birthdays_page()
-        elif index == PAGE_MEDIA:
-            self._refresh_media_page()
         elif index == PAGE_REPORTS:
             self._refresh_reports_page()
         elif index == PAGE_SETTINGS:
@@ -3786,161 +3630,6 @@ class MainWindow(QMainWindow):
             self.bd_rows_layout.addWidget(row)
         self.bd_rows_layout.addStretch(1)
 
-    # ==================================================================
-    # SAYFA 4b — GÖRSELLER (oyuncu fotoğrafı / takım logosu admin paneli)
-    # ==================================================================
-    def _build_media_page(self) -> QWidget:
-        page = QWidget()
-        inner = QWidget()
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(16)
-
-        logos_card, l_layout = self._card(spacing=10)
-        l_layout.addWidget(self._section_label("Rakip takım logoları"))
-        logos_note = QLabel("Bir takımın satırına tıklayıp logo seç; .png/.jpg/.jpeg herhangi bir görsel olur, "
-                             "otomatik olarak uygun boyuta getirilir.")
-        logos_note.setObjectName("noteText")
-        logos_note.setWordWrap(True)
-        l_layout.addWidget(logos_note)
-        logos_inner = QWidget()
-        self.media_logo_rows_layout = QVBoxLayout(logos_inner)
-        self.media_logo_rows_layout.setContentsMargins(0, 0, 0, 0)
-        self.media_logo_rows_layout.setSpacing(0)
-        l_layout.addWidget(logos_inner)
-        layout.addWidget(logos_card)
-
-        players_card, p_layout = self._card(spacing=10)
-        p_layout.addWidget(self._section_label("Oyuncu fotoğrafları"))
-        players_note = QLabel("Kadrodaki her oyuncu için bir fotoğraf ekleyebilirsin. Fotoğrafı olmayan "
-                               "oyuncu, eskisi gibi harf rozetiyle gösterilmeye devam eder.")
-        players_note.setObjectName("noteText")
-        players_note.setWordWrap(True)
-        p_layout.addWidget(players_note)
-        players_inner = QWidget()
-        self.media_player_rows_layout = QVBoxLayout(players_inner)
-        self.media_player_rows_layout.setContentsMargins(0, 0, 0, 0)
-        self.media_player_rows_layout.setSpacing(0)
-        p_layout.addWidget(self._scroll(players_inner), 1)
-        layout.addWidget(players_card, 1)
-
-        outer = QVBoxLayout(page)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(self._scroll(inner))
-        return page
-
-    def _media_row(self, display_name: str, sub_text: str, pixmap, fallback_text: str,
-                    on_pick, on_remove, has_file: bool) -> QFrame:
-        row = QFrame()
-        row.setObjectName("rowLine")
-        row.setFixedHeight(66)
-        row_layout = QHBoxLayout(row)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(14)
-
-        preview = QLabel()
-        preview.setFixedSize(44, 44)
-        preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        if pixmap is not None:
-            preview.setPixmap(pixmap)
-        else:
-            preview.setObjectName("avatar")
-            preview.setText(fallback_text)
-        row_layout.addWidget(preview)
-
-        text_col = QVBoxLayout()
-        text_col.setSpacing(2)
-        name_lab = QLabel(display_name)
-        name_lab.setObjectName("bdName")
-        text_col.addWidget(name_lab)
-        if sub_text:
-            sub_lab = QLabel(sub_text)
-            sub_lab.setObjectName("dateSub")
-            text_col.addWidget(sub_lab)
-        row_layout.addLayout(text_col, 1)
-
-        pick_btn = QPushButton("Fotoğrafı değiştir" if has_file else "Görsel seç")
-        pick_btn.setObjectName("outlineSmall")
-        pick_btn.setFixedHeight(32)
-        pick_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        pick_btn.clicked.connect(on_pick)
-        row_layout.addWidget(pick_btn)
-
-        if has_file:
-            remove_btn = QPushButton("Kaldır")
-            remove_btn.setObjectName("outlineSmall")
-            remove_btn.setFixedHeight(32)
-            remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            remove_btn.clicked.connect(on_remove)
-            row_layout.addWidget(remove_btn)
-
-        return row
-
-    def _refresh_media_page(self):
-        clear_layout(self.media_logo_rows_layout)
-        teams = opponent_team_names()
-        if not teams:
-            empty = QLabel("Fikstürde rakip takım bulunamadı.")
-            empty.setObjectName("emptyHint")
-            self.media_logo_rows_layout.addWidget(empty)
-        for team in teams:
-            has_file = team_logo_source_path(team) is not None
-            pixmap = get_team_logo_pixmap(team, 40)
-            row = self._media_row(
-                team, "", pixmap, team_abbr(team),
-                lambda checked=False, t=team: self._pick_team_logo(t),
-                lambda checked=False, t=team: self._remove_team_logo(t),
-                has_file,
-            )
-            self.media_logo_rows_layout.addWidget(row)
-
-        clear_layout(self.media_player_rows_layout)
-        if not ROSTER:
-            empty = QLabel("Kadro verisi eklenmedi.")
-            empty.setObjectName("emptyHint")
-            self.media_player_rows_layout.addWidget(empty)
-        for p in ROSTER:
-            has_file = player_photo_source_path(p["name"]) is not None
-            pixmap = get_player_photo_pixmap(p["name"], 40)
-            sub = p["pos"] + (f" · {p['no']}" if p["no"] else "")
-            row = self._media_row(
-                p["name"], sub, pixmap, initials(p["name"]),
-                lambda checked=False, n=p["name"]: self._pick_player_photo(n),
-                lambda checked=False, n=p["name"]: self._remove_player_photo(n),
-                has_file,
-            )
-            self.media_player_rows_layout.addWidget(row)
-        self.media_player_rows_layout.addStretch(1)
-
-    def _pick_team_logo(self, team_name: str):
-        path, _ = QFileDialog.getOpenFileName(
-            self, f"{team_name} logosu seç", "", "Görseller (*.png *.jpg *.jpeg *.webp)")
-        if not path:
-            return
-        if set_team_logo(team_name, path):
-            self._refresh_media_page()
-        else:
-            QMessageBox.warning(self, "Olmadı", "Bu görsel okunamadı, başka bir dosya seçmeyi dener misin?")
-
-    def _remove_team_logo(self, team_name: str):
-        remove_team_logo(team_name)
-        self._refresh_media_page()
-
-    def _pick_player_photo(self, player_name: str):
-        path, _ = QFileDialog.getOpenFileName(
-            self, f"{player_name} fotoğrafı seç", "", "Görseller (*.png *.jpg *.jpeg *.webp)")
-        if not path:
-            return
-        if set_player_photo(player_name, path):
-            self._refresh_media_page()
-        else:
-            QMessageBox.warning(self, "Olmadı", "Bu görsel okunamadı, başka bir dosya seçmeyi dener misin?")
-
-    def _remove_player_photo(self, player_name: str):
-        remove_player_photo(player_name)
-        self._refresh_media_page()
-
-    # ==================================================================
     # SAYFA 4 — RAPORLAR (geçmiş işlemler)
     # ==================================================================
     def _build_reports_page(self) -> QWidget:
