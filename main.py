@@ -1495,6 +1495,133 @@ def initials(name: str) -> str:
     return turkish_upper(parts[0][0] + parts[-1][0])
 
 
+# ==========================================================================================
+#  OYUNCU FOTOĞRAFLARI
+# ==========================================================================================
+# main.py ile AYNI klasöre bu adlardan biriyle bir klasör açıp (ör. "oyuncu_fotograflari")
+# içine her oyuncu için bir fotoğraf (png/jpg) koyarsan, kadro ve sağlık dosyası ekranlarında
+# harf rozeti yerine otomatik olarak bu fotoğraf kullanılır. Dosya adı tam oyuncu adı olabilir
+# ("Serhat Öztaşdelen.png") ya da sadece ad/soyad olabilir ("serhat.jpg") — eşleştirme esnektir.
+# Bir oyuncunun fotoğrafı yoksa o oyuncu eskisi gibi harf rozetiyle gösterilir.
+PLAYER_PHOTOS_DIRNAMES = (
+    "oyuncu_fotograflari", "oyuncularimiz", "oyuncular", "oyuncu_resimleri",
+    "player_photos", "fotograflar",
+)
+_PLAYER_PHOTO_EXTS = ("png", "PNG", "jpg", "JPG", "jpeg", "JPEG", "webp", "WEBP")
+_player_photo_cache: dict = {}
+
+
+def _name_slug(text: str) -> str:
+    return team_logo_slug(text)
+
+
+def player_photo_source_path(name: str):
+    app_dir = Path(__file__).resolve().parent
+    full_slug = _name_slug(name)
+    tokens = [_name_slug(t) for t in name.split() if len(t) >= 3]
+
+    candidate_dirs = []
+    for dirname in PLAYER_PHOTOS_DIRNAMES:
+        d = app_dir / dirname
+        if d.is_dir():
+            candidate_dirs.append(d)
+    # Klasör adı yukarıdaki listede yoksa bile, içinde boşluk/alt çizgi/"oyuncu" geçen
+    # herhangi bir alt klasörü de dene (ör. "Oyuncularımız 26-27").
+    try:
+        for entry in app_dir.iterdir():
+            if entry.is_dir() and entry not in candidate_dirs:
+                if "oyuncu" in _name_slug(entry.name) or "player" in _name_slug(entry.name):
+                    candidate_dirs.append(entry)
+    except OSError:
+        pass
+
+    # 1) Tam eşleşme
+    for folder in candidate_dirs:
+        for ext in _PLAYER_PHOTO_EXTS:
+            candidate = folder / f"{full_slug}.{ext}"
+            if candidate.is_file():
+                return candidate
+
+    # 2) Esnek eşleşme: dosya adını da sadeleştirip tam isimle ya da ad/soyad parçalarıyla
+    #    karşılaştır.
+    best, best_len = None, -1
+    for folder in candidate_dirs:
+        try:
+            entries = list(folder.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_file() or entry.suffix.lower().lstrip(".") not in (
+                "png", "jpg", "jpeg", "webp"
+            ):
+                continue
+            file_slug = _name_slug(entry.stem)
+            if not file_slug:
+                continue
+            matched = (
+                file_slug == full_slug
+                or file_slug in full_slug
+                or full_slug in file_slug
+                or file_slug in tokens
+                or any(len(tok) >= 4 and tok in file_slug for tok in tokens)
+            )
+            if matched and len(file_slug) > best_len:
+                best, best_len = entry, len(file_slug)
+    return best
+
+
+def _circular_pixmap(raw: QPixmap, size: int) -> "QPixmap | None":
+    if raw.isNull():
+        return None
+    scaled = raw.scaled(
+        size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    x = max(0, (scaled.width() - size) // 2)
+    y = max(0, (scaled.height() - size) // 2)
+    cropped = scaled.copy(x, y, size, size)
+    result = QPixmap(size, size)
+    result.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(result)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addEllipse(QRectF(0, 0, size, size))
+    painter.setClipPath(path)
+    painter.drawPixmap(0, 0, cropped)
+    painter.end()
+    return result
+
+
+def get_player_photo_pixmap(name: str, size: int):
+    """Varsa oyuncunun fotoğrafını daire şeklinde kırpıp döndürür; yoksa None
+    (çağıran taraf None durumunda mevcut harf rozetine düşer)."""
+    cache_key = (name, size)
+    if cache_key in _player_photo_cache:
+        return _player_photo_cache[cache_key]
+    pixmap = None
+    path = player_photo_source_path(name)
+    if path is not None:
+        raw = QPixmap()
+        if raw.load(str(path)) and not raw.isNull():
+            pixmap = _circular_pixmap(raw, size)
+    _player_photo_cache[cache_key] = pixmap
+    return pixmap
+
+
+def make_avatar_label(name: str, size: int, object_name: str) -> QLabel:
+    """Oyuncu fotoğrafı varsa daire şeklinde onu, yoksa harf rozetini gösteren QLabel."""
+    label = QLabel()
+    label.setObjectName(object_name)
+    label.setFixedSize(size, size)
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    pixmap = get_player_photo_pixmap(name, size)
+    if pixmap is not None:
+        label.setPixmap(pixmap)
+    else:
+        label.setText(initials(name))
+    return label
+
+
 DAYS_TR = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
 
 
@@ -3528,10 +3655,7 @@ class MainWindow(QMainWindow):
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(14)
 
-            avatar = QLabel(initials(b["name"]))
-            avatar.setObjectName("avatar")
-            avatar.setFixedSize(40, 40)
-            avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            avatar = make_avatar_label(b["name"], 40, "avatar")
             row_layout.addWidget(avatar)
 
             text_col = QVBoxLayout()
@@ -6392,10 +6516,7 @@ class HealthWindow(DeptWindow):
         prof, pl = self._card(margins=(22, 22, 22, 22), spacing=16)
         head = QHBoxLayout()
         head.setSpacing(16)
-        av = QLabel(initials(p["name"]))
-        av.setObjectName("avatarBig")
-        av.setFixedSize(64, 64)
-        av.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        av = make_avatar_label(p["name"], 64, "avatarBig")
         head.addWidget(av)
         nm = QVBoxLayout()
         nm.setSpacing(3)
