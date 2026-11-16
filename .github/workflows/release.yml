@@ -2,26 +2,52 @@ name: Build & release macOS app
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    paths: ["main.py"]
   workflow_dispatch: {}
+
+permissions:
+  contents: write
 
 jobs:
   build-macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read APP_VERSION from main.py
+        id: ver
+        run: |
+          v=$(python3 -c "import re; print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"', open('main.py', encoding='utf-8').read()).group(1))")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if this version was already released
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.ver.outputs.tag }}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/setup-python@v5
+        if: steps.check.outputs.skip == 'false'
         with:
           python-version: "3.11"
 
       - name: Install dependencies
+        if: steps.check.outputs.skip == 'false'
         run: |
           python3 -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Build .icns from club logo
+        if: steps.check.outputs.skip == 'false'
         run: |
           mkdir icon.iconset
           for size in 16 32 64 128 256 512; do
@@ -32,6 +58,7 @@ jobs:
           iconutil -c icns icon.iconset -o icon.icns
 
       - name: Build app with PyInstaller
+        if: steps.check.outputs.skip == 'false'
         run: |
           pyinstaller --windowed --onedir --name MediaStaffKS \
             --icon icon.icns \
@@ -39,15 +66,19 @@ jobs:
             main.py
 
       - name: Zip app bundle
+        if: steps.check.outputs.skip == 'false'
         run: |
           cd dist
           zip -r -y MediaStaffKS-mac.zip MediaStaffKS.app
 
-      - name: Create GitHub release
+      - name: Tag and create GitHub release
+        if: steps.check.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" \
+          git tag "${{ steps.ver.outputs.tag }}"
+          git push origin "${{ steps.ver.outputs.tag }}"
+          gh release create "${{ steps.ver.outputs.tag }}" \
             dist/MediaStaffKS-mac.zip \
-            --title "MediaStaffKS ${{ github.ref_name }}" \
+            --title "MediaStaffKS ${{ steps.ver.outputs.tag }}" \
             --generate-notes
