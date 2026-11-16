@@ -1,0 +1,53 @@
+name: Build & release macOS app
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build .icns from club logo
+        run: |
+          mkdir icon.iconset
+          for size in 16 32 64 128 256 512; do
+            sips -z $size $size kocaelispor_logo.png --out "icon.iconset/icon_${size}x${size}.png"
+            double=$((size*2))
+            sips -z $double $double kocaelispor_logo.png --out "icon.iconset/icon_${size}x${size}@2x.png"
+          done
+          iconutil -c icns icon.iconset -o icon.icns
+
+      - name: Build app with PyInstaller
+        run: |
+          pyinstaller --windowed --onedir --name MediaStaffKS \
+            --icon icon.icns \
+            --add-data "kocaelispor_logo.png:." \
+            main.py
+
+      - name: Zip app bundle
+        run: |
+          cd dist
+          zip -r -y MediaStaffKS-mac.zip MediaStaffKS.app
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            dist/MediaStaffKS-mac.zip \
+            --title "MediaStaffKS ${{ github.ref_name }}" \
+            --generate-notes
