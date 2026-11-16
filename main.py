@@ -111,10 +111,34 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 UPDATE_REPO = "Mertchallenge/media"
 UPDATE_API_URL = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
 UPDATE_RAW_MAIN_URL = f"https://raw.githubusercontent.com/{UPDATE_REPO}/main/main.py"
+UPDATE_LOG_PATH = os.path.join(os.path.expanduser("~"), ".kocaelispor_foto_ayiklama", "update_check.log")
+
+
+def _update_ssl_context():
+    """Paketlenmiş (.app) sürümde bazen sistemin kök sertifikaları bulunamayabiliyor;
+    certifi varsa onu kullan, yoksa doğrulamasız bağlan (yalnızca GitHub'dan okuma için)."""
+    import ssl
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        try:
+            return ssl._create_unverified_context()
+        except Exception:
+            return None
+
+
+def _log_update_event(text: str):
+    try:
+        os.makedirs(os.path.dirname(UPDATE_LOG_PATH), exist_ok=True)
+        with open(UPDATE_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(f"{datetime.now().isoformat(timespec='seconds')}  {text}\n")
+    except Exception:
+        pass
 
 # Kocaelispor renk paleti
 COLOR_BG_DARK      = "#0d0f0d"
@@ -1128,18 +1152,21 @@ class UpdateCheckWorker(QThread):
     failed = pyqtSignal(str)
 
     def run(self):
+        _log_update_event(f"kontrol başladı (yerel sürüm {APP_VERSION}, frozen={is_frozen()})")
         try:
             request = urllib.request.Request(
                 UPDATE_API_URL, headers={"Accept": "application/vnd.github+json",
                                           "User-Agent": "MediaStaffKS-Updater"}
             )
-            with urllib.request.urlopen(request, timeout=15) as response:
+            with urllib.request.urlopen(request, timeout=15, context=_update_ssl_context()) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except Exception as e:
+            _log_update_event(f"kontrol HATASI: {e!r}")
             self.failed.emit(str(e))
             return
 
         remote_tag = str(data.get("tag_name", "")).strip()
+        _log_update_event(f"kontrol bitti, uzak sürüm: {remote_tag!r}")
         if not remote_tag:
             self.none_found.emit()
             return
@@ -1176,7 +1203,7 @@ class UpdateDownloadWorker(QThread):
             tmp_dir = Path(tempfile.mkdtemp(prefix="mediastaffks_update_"))
             request = urllib.request.Request(self.url, headers={"User-Agent": "MediaStaffKS-Updater"})
             self.progress.emit("İndiriliyor…")
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with urllib.request.urlopen(request, timeout=120, context=_update_ssl_context()) as response:
                 payload = response.read()
 
             if self.mode == "zip":

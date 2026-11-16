@@ -4,4 +4,6 @@ numpy
 onnxruntime
 insightface
 cryptography
+certifi
 pyinstaller
+pyinstaller-hooks-contrib
