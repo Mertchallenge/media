@@ -1420,12 +1420,38 @@ def team_logo_slug(name: str) -> str:
 def team_logo_source_path(name: str):
     app_dir = Path(__file__).resolve().parent
     slug = team_logo_slug(name)
+
+    # 1) Tam eşleşme: "<slug>.png" / "<slug>.PNG"
     for dirname in TEAM_LOGOS_DIRNAMES:
         for ext in ("png", "PNG"):
             candidate = app_dir / dirname / f"{slug}.{ext}"
             if candidate.is_file():
                 return candidate
-    return None
+
+    # 2) Esnek eşleşme: klasördeki her PNG'nin adını da aynı şekilde sadeleştirip
+    #    takım slug'ıyla birbirini içerip içermediğine bakar. Böylece "corum.png"
+    #    "Çorum FK" (corum_fk) ile, "fenerbahçe.png" "Fenerbahçe" (fenerbahce) ile eşleşir.
+    best = None
+    best_len = -1
+    for dirname in TEAM_LOGOS_DIRNAMES:
+        folder = app_dir / dirname
+        if not folder.is_dir():
+            continue
+        try:
+            entries = list(folder.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_file() or entry.suffix.lower() != ".png":
+                continue
+            file_slug = team_logo_slug(entry.stem)
+            if not file_slug:
+                continue
+            if file_slug == slug or file_slug in slug or slug in file_slug:
+                if len(file_slug) > best_len:
+                    best = entry
+                    best_len = len(file_slug)
+    return best
 
 
 def get_team_logo_pixmap(name: str, size: int):
