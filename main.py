@@ -111,7 +111,7 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 UPDATE_REPO = "Mertchallenge/media"
 UPDATE_API_URL = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
 UPDATE_RAW_MAIN_URL = f"https://raw.githubusercontent.com/{UPDATE_REPO}/main/main.py"
@@ -182,17 +182,21 @@ TURKISH_MONTHS = {
 # iç saha mı deplasman mı olduğu otomatik hesaplanır.
 KULUP_ADI = "Kocaelispor"
 
+# "stadium" alanı ev sahibi takımın sahasıdır — fikstür gibi elle girilir/güncellenir.
+# Kocaelispor'un kendi sahası sponsor adı değiştikçe güncellenebilir; diğerleri de aynı şekilde.
+KOCAELISPOR_STADIUM = "Kocaeli Stadyumu"
+
 MANUAL_FIXTURES = [
-    {"home": "Beşiktaş",      "away": "Kocaelispor", "date": date(2026, 10, 11), "time": "19:00"},
-    {"home": "Kocaelispor",   "away": "Göztepe",      "date": date(2026, 10, 18), "time": "16:00"},
-    {"home": "Alanyaspor",    "away": "Kocaelispor", "date": date(2026, 10, 23), "time": "20:00"},
-    {"home": "Kocaelispor",   "away": "Rizespor",     "date": date(2026, 10, 31), "time": "16:00"},
-    {"home": "Eyüpspor",      "away": "Kocaelispor", "date": date(2026, 11, 7),  "time": "13:30"},
-    {"home": "Kocaelispor",   "away": "Fenerbahçe",   "date": date(2026, 11, 21), "time": "19:00"},
-    {"home": "Çorum FK",      "away": "Kocaelispor", "date": date(2026, 11, 29), "time": "13:30"},
-    {"home": "Erzurumspor",   "away": "Kocaelispor", "date": date(2026, 12, 6),  "time": "13:30"},
-    {"home": "Kocaelispor",   "away": "Trabzonspor",  "date": date(2026, 12, 13), "time": "13:30"},
-    {"home": "Gençlerbirliği", "away": "Kocaelispor", "date": date(2026, 12, 21), "time": "20:00"},
+    {"home": "Beşiktaş",      "away": "Kocaelispor", "date": date(2026, 10, 11), "time": "19:00", "stadium": "Tüpraş Stadyumu"},
+    {"home": "Kocaelispor",   "away": "Göztepe",      "date": date(2026, 10, 18), "time": "16:00", "stadium": KOCAELISPOR_STADIUM},
+    {"home": "Alanyaspor",    "away": "Kocaelispor", "date": date(2026, 10, 23), "time": "20:00", "stadium": "Bahçeşehir Okulları Stadyumu"},
+    {"home": "Kocaelispor",   "away": "Rizespor",     "date": date(2026, 10, 31), "time": "16:00", "stadium": KOCAELISPOR_STADIUM},
+    {"home": "Eyüpspor",      "away": "Kocaelispor", "date": date(2026, 11, 7),  "time": "13:30", "stadium": "Pendik Stadyumu"},
+    {"home": "Kocaelispor",   "away": "Fenerbahçe",   "date": date(2026, 11, 21), "time": "19:00", "stadium": KOCAELISPOR_STADIUM},
+    {"home": "Çorum FK",      "away": "Kocaelispor", "date": date(2026, 11, 29), "time": "13:30", "stadium": "Çorum Stadyumu"},
+    {"home": "Erzurumspor",   "away": "Kocaelispor", "date": date(2026, 12, 6),  "time": "13:30", "stadium": "Kazım Karabekir Stadyumu"},
+    {"home": "Kocaelispor",   "away": "Trabzonspor",  "date": date(2026, 12, 13), "time": "13:30", "stadium": KOCAELISPOR_STADIUM},
+    {"home": "Gençlerbirliği", "away": "Kocaelispor", "date": date(2026, 12, 21), "time": "20:00", "stadium": "Eryaman Stadyumu"},
 ]
 
 # --- Doğum günü verisi (ELLE GİRİLEN, sabit liste — Transfermarkt kadro sayfasından) --------
@@ -881,7 +885,8 @@ def get_upcoming_fixtures() -> list:
     for f in upcoming:
         is_home = (f["home"] == KULUP_ADI)
         opponent = f["away"] if is_home else f["home"]
-        result.append({"date": f["date"], "time": f["time"], "opponent": opponent, "home": is_home})
+        result.append({"date": f["date"], "time": f["time"], "opponent": opponent, "home": is_home,
+                        "stadium": f.get("stadium", "")})
     return result
 
 
@@ -1357,6 +1362,56 @@ def get_club_logo_pixmap(size: int):
     )
     _club_logo_pixmap_cache[size] = scaled
     return scaled
+
+
+# --- Rakip takım görselleri (PNG) ---------------------------------------------------------
+# main.py ile aynı klasörde bir "takim_logolari" klasörü oluşturup, her takım için düz bir PNG
+# (tercihen şeffaf arka planlı) koyarsan o takımın amblemi otomatik kullanılır. Dosya adı, takım
+# adının küçük harfe çevrilip Türkçe karakterleri sadeleştirilmiş hâlidir, örn:
+#   "Fenerbahçe" -> takim_logolari/fenerbahce.png
+#   "Çorum FK"   -> takim_logolari/corum_fk.png
+# Bir takım için dosya yoksa, mevcut üç harfli rozet (TEAM_ABBR) otomatik olarak kullanılmaya
+# devam eder — hiçbir şey kırılmaz.
+TEAM_LOGOS_DIRNAME = "takim_logolari"
+_team_logo_pixmap_cache: dict = {}
+
+_TR_SLUG_MAP = str.maketrans({
+    "ı": "i", "İ": "i", "ş": "s", "Ş": "s", "ğ": "g", "Ğ": "g",
+    "ü": "u", "Ü": "u", "ö": "o", "Ö": "o", "ç": "c", "Ç": "c",
+})
+
+
+def team_logo_slug(name: str) -> str:
+    slug = name.strip().lower().translate(_TR_SLUG_MAP)
+    slug = "".join(ch if ch.isalnum() else "_" for ch in slug)
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug.strip("_")
+
+
+def team_logo_source_path(name: str):
+    base = Path(__file__).resolve().parent / TEAM_LOGOS_DIRNAME
+    candidate = base / f"{team_logo_slug(name)}.png"
+    return candidate if candidate.is_file() else None
+
+
+def get_team_logo_pixmap(name: str, size: int):
+    """Varsa takim_logolari/<takim>.png dosyasını, yoksa (Kocaelispor için) kulüp amblemini,
+    o da yoksa None döndürür — çağıran taraf None durumunda mevcut harf rozetine düşer."""
+    if name == KULUP_ADI:
+        return get_club_logo_pixmap(size)
+    cache_key = (name, size)
+    if cache_key in _team_logo_pixmap_cache:
+        return _team_logo_pixmap_cache[cache_key]
+    path = team_logo_source_path(name)
+    pixmap = None
+    if path is not None:
+        raw = QPixmap()
+        if raw.load(str(path)) and not raw.isNull():
+            pixmap = raw.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
+    _team_logo_pixmap_cache[cache_key] = pixmap
+    return pixmap
 
 
 TEAM_ABBR = {
@@ -3075,7 +3130,10 @@ class MainWindow(QMainWindow):
         for team_name in (home_name, away_name):
             team_row = QHBoxLayout()
             team_row.setSpacing(12)
-            badge_label = QLabel(team_abbr(team_name))
+            team_logo = get_team_logo_pixmap(team_name, 32)
+            badge_label = QLabel("" if team_logo is not None else team_abbr(team_name))
+            if team_logo is not None:
+                badge_label.setPixmap(team_logo)
             badge_label.setObjectName("teamBadgeOwn" if team_name == KULUP_ADI else "teamBadge")
             badge_label.setFixedSize(38, 38)
             badge_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -3098,7 +3156,8 @@ class MainWindow(QMainWindow):
         when_col.setSpacing(2)
         date_main = QLabel(f"{d.day} {TURKISH_MONTHS[d.month]}, {DAYS_TR[d.weekday()]}")
         date_main.setObjectName("dateMain")
-        date_sub = QLabel(nm["time"])
+        stadium = nm.get("stadium") or ""
+        date_sub = QLabel(f"{nm['time']} · {stadium}" if stadium else nm["time"])
         date_sub.setObjectName("dateSub")
         when_col.addWidget(date_main)
         when_col.addWidget(date_sub)
@@ -3111,7 +3170,7 @@ class MainWindow(QMainWindow):
         hint_row = QHBoxLayout()
         hint_row.setSpacing(6)
         hint_row.addWidget(self._icon_label("sparkles", K_GREEN_HI, 14))
-        hint = QLabel("Detay ve yapay zekâ yorumu")
+        hint = QLabel("Maç detayına git")
         hint.setObjectName("linkHint")
         hint_row.addWidget(hint)
         hint_row.addStretch(1)
@@ -3223,47 +3282,8 @@ class MainWindow(QMainWindow):
 
         self.match_hero_card, self.match_hero_layout = self._card(margins=(24, 22, 24, 22), spacing=18)
         detail.addWidget(self.match_hero_card)
+        detail.addStretch(1)
 
-        ai_card, ai_layout = self._card(spacing=14)
-        head = QHBoxLayout()
-        head.setSpacing(10)
-        head.addWidget(self._icon_label("sparkles", K_GREEN_HI, 18))
-        head.addWidget(self._section_label("Yapay zekâ yorumu"))
-        head.addStretch(1)
-        self.ai_settings_btn = QPushButton("Ayarlar'a git")
-        self.ai_settings_btn.setObjectName("outlineSmall")
-        self.ai_settings_btn.setFixedHeight(34)
-        self.ai_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.ai_settings_btn.clicked.connect(lambda: self._go_to(PAGE_SETTINGS))
-        self.ai_settings_btn.setVisible(False)
-        head.addWidget(self.ai_settings_btn)
-        self.ai_btn = QPushButton("Yorum üret")
-        self.ai_btn.setObjectName("aiBtn")
-        self.ai_btn.setFixedHeight(34)
-        self.ai_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.ai_btn.clicked.connect(self._generate_ai_comment)
-        head.addWidget(self.ai_btn)
-        ai_layout.addLayout(head)
-
-        self.ai_text = QTextEdit()
-        self.ai_text.setObjectName("aiText")
-        self.ai_text.setReadOnly(True)
-        self.ai_text.setMinimumHeight(230)
-        ai_layout.addWidget(self.ai_text, 1)
-
-        self.ai_status = QLabel("")
-        self.ai_status.setObjectName("aiStatus")
-        self.ai_status.setWordWrap(True)
-        ai_layout.addWidget(self.ai_status)
-
-        note = QLabel("Yorum yapay zekâ tarafından üretilir; güncel form, sakatlık ve puan durumu bilgisine sahip "
-                      "değildir. Yayınlamadan önce kontrol et. Yalnızca maç bilgisi (rakip, tarih, saat, iç saha/"
-                      "deplasman) gönderilir; fotoğraflar hiçbir zaman gönderilmez.")
-        note.setObjectName("noteText")
-        note.setWordWrap(True)
-        ai_layout.addWidget(note)
-
-        detail.addWidget(ai_card, 1)
         row.addWidget(self._scroll(detail_inner), 1)
         return page
 
@@ -3286,7 +3306,6 @@ class MainWindow(QMainWindow):
         self.match_list_layout.addStretch(1)
 
         self._refresh_match_hero()
-        self._show_ai_for_selected()
 
     def _make_match_item(self, fx: dict, selected: bool) -> QFrame:
         item = ClickableFrame()
@@ -3381,7 +3400,8 @@ class MainWindow(QMainWindow):
                 ("Tarih", f"{d.day} {TURKISH_MONTHS[d.month]} {d.year}"),
                 ("Gün", DAYS_TR[d.weekday()]),
                 ("Başlama saati", fx["time"]),
-                ("Kalan süre", countdown_text(days_left)))):
+                ("Kalan süre", countdown_text(days_left)),
+                ("Stadyum", fx.get("stadium") or "—"))):
             cell = QVBoxLayout()
             cell.setSpacing(4)
             cell.addWidget(self._section_label(caption))
@@ -3394,7 +3414,10 @@ class MainWindow(QMainWindow):
     def _big_team(self, name: str) -> QVBoxLayout:
         col = QVBoxLayout()
         col.setSpacing(10)
-        badge = QLabel(team_abbr(name))
+        logo = get_team_logo_pixmap(name, 64)
+        badge = QLabel("" if logo is not None else team_abbr(name))
+        if logo is not None:
+            badge.setPixmap(logo)
         badge.setObjectName("teamBadgeBigOwn" if name == KULUP_ADI else "teamBadgeBig")
         badge.setFixedSize(80, 80)
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -3404,104 +3427,6 @@ class MainWindow(QMainWindow):
         col.addWidget(badge, 0, Qt.AlignmentFlag.AlignHCenter)
         col.addWidget(label)
         return col
-
-    # --- Yapay zekâ yorumu ------------------------------------------------
-    def _set_ai_status(self, text: str, error: bool = False):
-        self.ai_status.setText(text)
-        self.ai_status.setProperty("error", error)
-        repolish(self.ai_status)
-
-    def _show_ai_for_selected(self):
-        fx = self._selected_fx
-        has_key = bool(get_api_key())
-        self.ai_settings_btn.setVisible(not has_key)
-        if fx is None:
-            self.ai_text.setPlainText("")
-            self.ai_btn.setEnabled(False)
-            self._set_ai_status("")
-            return
-
-        key = fixture_key(fx)
-        cached = self._ai_cache.get(key)
-        generating = (self._ai_generating_key == key)
-        self.ai_btn.setEnabled(has_key and not generating)
-        self.ai_btn.setText("Yeniden üret" if cached else "Yorum üret")
-        icon = make_icon("sparkles", "#04140D", 16)
-        if not icon.isNull():
-            self.ai_btn.setIcon(icon)
-            self.ai_btn.setIconSize(QSize(16, 16))
-
-        if generating:
-            self.ai_text.setPlainText("")
-            self._set_ai_status("Yorum hazırlanıyor…")
-        elif cached:
-            self.ai_text.setPlainText(cached.get("text", ""))
-            self._set_ai_status(f"{cached.get('model', '')} · {format_dt(cached.get('ts', ''))}")
-        elif not has_key:
-            self.ai_text.setPlainText("Yapay zekâ yorumu için Anthropic API anahtarı gerekiyor.\n\n"
-                                      "Ayarlar sayfasından anahtarını ekle, sonra buradan “Yorum üret”e bas.")
-            self._set_ai_status("")
-        else:
-            self.ai_text.setPlainText("Bu maç için henüz yorum üretilmedi.\n\n“Yorum üret”e basarak maçın önemi, "
-                                      "dikkat edilecekler ve medya ekibi için içerik fikirlerini görebilirsin.")
-            self._set_ai_status("")
-
-    def _build_ai_prompt(self, fx: dict) -> str:
-        today = date.today()
-        d = fx["date"]
-        days_left = (d - today).days
-        home_name = KULUP_ADI if fx["home"] else fx["opponent"]
-        away_name = fx["opponent"] if fx["home"] else KULUP_ADI
-        others = [
-            f"{f['date'].day} {TURKISH_MONTHS[f['date'].month]}: {f['opponent']} "
-            f"({'iç saha' if f['home'] else 'deplasman'})"
-            for f in get_upcoming_fixtures() if f["date"] != d
-        ][:4]
-        lines = [
-            f"Bugünün tarihi: {today.day} {TURKISH_MONTHS[today.month]} {today.year}.",
-            f"Maç: {home_name} - {away_name}.",
-            f"Tarih: {d.day} {TURKISH_MONTHS[d.month]} {d.year}, {DAYS_TR[d.weekday()]}, saat {fx['time']}.",
-            f"{KULUP_ADI} bu maçta {'iç sahada' if fx['home'] else 'deplasmanda'} oynuyor.",
-            f"Maça {days_left} gün var." if days_left > 0 else "Maç bugün.",
-        ]
-        if others:
-            lines.append("Kocaelispor'un sonraki maçları: " + "; ".join(others) + ".")
-        lines.append("Bu bilgilere dayanarak istenen biçimde kısa bir yorum yaz.")
-        return "\n".join(lines)
-
-    def _generate_ai_comment(self):
-        fx = self._selected_fx
-        if fx is None:
-            return
-        api_key = get_api_key()
-        if not api_key:
-            self._show_ai_for_selected()
-            return
-        model = load_config().get("ai_model") or DEFAULT_AI_MODEL
-        key = fixture_key(fx)
-        self._ai_generating_key = key
-        self._show_ai_for_selected()
-
-        worker = AiCommentWorker(key, api_key, model, AI_SYSTEM_PROMPT, self._build_ai_prompt(fx))
-        worker.result_signal.connect(self._on_ai_result)
-        worker.finished.connect(lambda w=worker: self._ai_workers.remove(w) if w in self._ai_workers else None)
-        self._ai_workers.append(worker)
-        worker.start()
-
-    def _on_ai_result(self, key: str, text: str, error: str):
-        if self._ai_generating_key == key:
-            self._ai_generating_key = ""
-        if text:
-            model = load_config().get("ai_model") or DEFAULT_AI_MODEL
-            self._ai_cache[key] = {"text": text, "model": model, "ts": datetime.now().isoformat(timespec="seconds")}
-            write_json(AI_CACHE_PATH, self._ai_cache)
-        selected_key = fixture_key(self._selected_fx) if self._selected_fx else ""
-        if key == selected_key:
-            self._show_ai_for_selected()
-            if error:
-                self._set_ai_status(error, error=True)
-        elif error:
-            pass  # başka maça geçilmiş; hatayı göstermeye gerek yok
 
     # ==================================================================
     # SAYFA 3 — DOĞUM GÜNLERİ
