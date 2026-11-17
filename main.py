@@ -35,6 +35,12 @@ basın toplantısı gibi değişken ışık/açı/mesafe koşullarında) en yük
   4) ADAPTİF TESPİT: İlk taramada yüz bulunamazsa (uzak/küçük yüzler), görüntü
      otomatik olarak büyütülüp tek seferlik yeniden denenir.
 
+  5) ÇOKLU YÜZ: Karedeki HER yüz ayrı ayrı tanınır; tanınan her oyuncu fotoğrafı kendi
+     klasörüne alır. Fotoğraf yalnızca hiçbir yüz eşleşmezse KARIŞIK'a gider.
+
+  6) OTOMATİK ÖNBELLEK YENİLEME: Referans klasörü (foto ekleme/silme/değişiklik) değişirse
+     ref_memory.pkl parmak iziyle fark edilir ve otomatik yeniden hesaplanır.
+
 TEKNOLOJİLER:
     - Yüz Tespiti + Tanıma: InsightFace (antelopev2 → buffalo_l otomatik düşüş)
     - Donanım İvmesi: Apple Silicon (M-Serisi) için CoreMLExecutionProvider (ONNXRuntime)
@@ -305,23 +311,38 @@ def imread_unicode(path: str):
         return None
 
 
-def select_primary_face(faces, img_w: int, img_h: int):
+def identify_all_faces(faces, img, ref_db: dict, threshold: float, margin: float, quality_filter: bool):
     """
-    MERKEZ-ODAK ALGORİTMASI (Center-Focus):
-    Karede birden fazla yüz varsa, geometrik merkeze (W/2, H/2) en yakın olan
-    yüz "ana/birincil özne" kabul edilir ve kimliklendirme sadece bu yüz üzerinden yapılır.
+    ÇOKLU YÜZ ALGORİTMASI: Karedeki HER yüz ayrı ayrı kalite süzgecinden ve eşleştirmeden geçer;
+    tanınan her oyuncu fotoğrafı kendi klasörüne alır (gol sevinci, ikili mücadele, toplu çekim).
+    Tanınmayan yüzler (rakip oyuncu, seyirci, belirsiz kare) göz ardı edilir — fotoğraf yalnızca
+    HİÇBİR yüz eşleşmezse KARIŞIK'a gider.
+
+    Döner: (eşleşmeler: {isim: en_iyi_skor}, ret_sebebi: str | None, ret_skoru: float)
+    Ret sebebi yalnızca hiç eşleşme yoksa doludur ve en BÜYÜK (en belirgin) yüzün sebebidir.
     """
-    if not faces:
-        return None
-    cx, cy = img_w / 2.0, img_h / 2.0
-    best_face, best_dist = None, None
-    for face in faces:
+    matches = {}
+    rejected = []  # (yüz_alanı, skor, sebep)
+    for face in faces or []:
         x1, y1, x2, y2 = face.bbox
-        fx, fy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
-        dist = (fx - cx) ** 2 + (fy - cy) ** 2
-        if best_dist is None or dist < best_dist:
-            best_dist, best_face = dist, face
-    return best_face
+        area = max(0.0, float(x2 - x1)) * max(0.0, float(y2 - y1))
+        if quality_filter:
+            ok, q_reason = face_quality_check(face, img)
+            if not ok:
+                rejected.append((area, 0.0, q_reason))
+                continue
+        name, score, reason = match_embedding_with_margin(face.normed_embedding, ref_db, threshold, margin)
+        if name is None:
+            rejected.append((area, score, reason))
+            continue
+        if score > matches.get(name, -1.0):  # aynı oyuncu iki yüzle eşleşirse en iyi skor kalır
+            matches[name] = score
+    if matches:
+        return matches, None, 0.0
+    if not rejected:
+        return {}, "yüz bulunamadı", 0.0
+    _, score, reason = max(rejected, key=lambda r: r[0])
+    return {}, reason, score
 
 
 def face_quality_check(face, img):
@@ -575,6 +596,21 @@ class ReferenceManager:
     def _cache_path(self, ref_folder: str) -> str:
         return os.path.join(ref_folder, REF_CACHE_FILENAME)
 
+    def _fingerprint(self, ref_folder: str) -> str:
+        """Referans klasörünün parmak izi (dosya yolu + boyut + değişme zamanı + kalite filtresi).
+        Referans fotoğraf eklenir/silinir/değişirse parmak izi değişir ve önbellek otomatik yenilenir."""
+        import hashlib as _hashlib
+        h = _hashlib.sha1()
+        h.update(f"qf={int(bool(self.quality_filter))}".encode())
+        for p in sorted(list_image_files(ref_folder)):
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            rel = os.path.relpath(p, ref_folder)
+            h.update(f"|{rel}:{st.st_size}:{int(st.st_mtime)}".encode("utf-8", "replace"))
+        return h.hexdigest()
+
     def load_or_build(self, ref_folder: str, force_rebuild: bool = False) -> dict:
         cache_path = self._cache_path(ref_folder)
 
@@ -585,6 +621,11 @@ class ReferenceManager:
                 # Farklı model paketiyle üretilmiş bir önbellek uyumsuz olabileceği için kontrol ediyoruz.
                 if cache_data.get("model_pack") != self.model_pack:
                     self.log("Önbellek farklı bir model paketiyle oluşturulmuş, yeniden hesaplanıyor...", "warn")
+                    return self._build_from_scratch(ref_folder, cache_path)
+                # Referans klasörü önbellek oluşturulduktan sonra değiştiyse (foto eklendi/silindi/değişti).
+                if cache_data.get("fingerprint") != self._fingerprint(ref_folder):
+                    self.log("Referans klasörü değişmiş (ya da önbellek eski sürüm), yeniden hesaplanıyor...",
+                             "info")
                     return self._build_from_scratch(ref_folder, cache_path)
                 ref_db = cache_data["ref_db"]
                 if not ref_db:
@@ -646,7 +687,8 @@ class ReferenceManager:
 
         try:
             with open(cache_path, "wb") as f:
-                pickle.dump({"model_pack": self.model_pack, "ref_db": ref_db}, f)
+                pickle.dump({"model_pack": self.model_pack, "ref_db": ref_db,
+                             "fingerprint": self._fingerprint(ref_folder)}, f)
             self.log(f"Referans hafızası kaydedildi: {cache_path}", "info")
         except Exception as e:
             self.log(f"ref_memory.pkl kaydedilemedi: {e}", "warn")
@@ -762,58 +804,46 @@ class ExtractionWorker(QThread):
                     if img is None:
                         raise ValueError("Görüntü okunamadı / bozuk dosya")
 
-                    h, w = img.shape[:2]
                     faces, proc_img = detect_faces_adaptive(face_app, img)
-                    primary_face = select_primary_face(faces, w, h)
+                    matches, reject_reason, reject_score = identify_all_faces(
+                        faces, proc_img, ref_db, self.threshold, self.margin, self.quality_filter)
 
-                    reject_reason = None
-                    matched_name, score = None, 0.0
-
-                    if primary_face is None:
-                        reject_reason = "yüz bulunamadı"
-                    else:
-                        if self.quality_filter:
-                            ok, q_reason = face_quality_check(primary_face, proc_img)
-                            if not ok:
-                                reject_reason = q_reason
-                        if reject_reason is None:
-                            emb = primary_face.normed_embedding
-                            matched_name, score, reason = match_embedding_with_margin(
-                                emb, ref_db, self.threshold, self.margin)
-                            if matched_name is None:
-                                reject_reason = reason
-
-                    if reject_reason is not None:
+                    if not matches:
                         self._copy_to(path, mixed_dir, filename)
                         stats["karisik"] += 1
                         stats["basarisiz"] += 1
                         stats["per_player"][MIXED_FOLDER_NAME] = stats["per_player"].get(MIXED_FOLDER_NAME, 0) + 1
-                        csv_rows.append((filename, "Karışık", "-", f"{score:.3f}", reject_reason))
+                        csv_rows.append((filename, "Karışık", "-", f"{reject_score:.3f}", reject_reason))
                         self.log_signal.emit(f"[KARIŞIK] {reject_reason}: {filename}", "warn")
                         self.thumbnail_signal.emit(
                             make_thumbnail_bytes(img), filename, f"KARIŞIK — {reject_reason}")
-                    elif strip_accents_upper(matched_name) in goalkeeper_pool_clean:
-                        self._copy_to(path, goalkeeper_dir, filename)
-                        stats["kaleci"] += 1
-                        stats["basarili"] += 1
-                        stats["per_player"][GOALKEEPER_FOLDER_NAME] = \
-                            stats["per_player"].get(GOALKEEPER_FOLDER_NAME, 0) + 1
-                        csv_rows.append((filename, "Kaleci Havuzu", matched_name, f"{score:.3f}", "-"))
-                        self.log_signal.emit(
-                            f"[KALECİLER] {matched_name} (skor={score:.2f}): {filename}", "success")
-                        self.thumbnail_signal.emit(
-                            make_thumbnail_bytes(img), filename, f"KALECİLER — {matched_name} ({score:.2f})")
                     else:
-                        player_dir = os.path.join(output_root, matched_name)
-                        os.makedirs(player_dir, exist_ok=True)
-                        self._copy_to(path, player_dir, filename)
-                        stats["basarili"] += 1
-                        stats["per_player"][matched_name] = stats["per_player"].get(matched_name, 0) + 1
-                        csv_rows.append((filename, "Eşleşti", matched_name, f"{score:.3f}", "-"))
-                        self.log_signal.emit(
-                            f"[{matched_name}] eşleşti (skor={score:.2f}): {filename}", "success")
-                        self.thumbnail_signal.emit(
-                            make_thumbnail_bytes(img), filename, f"{matched_name} ({score:.2f})")
+                        # Karedeki tanınan HER oyuncu fotoğrafı kendi klasörüne alır (skora göre sıralı).
+                        keeper_copied = False
+                        labels = []
+                        for matched_name, score in sorted(matches.items(), key=lambda kv: kv[1], reverse=True):
+                            if strip_accents_upper(matched_name) in goalkeeper_pool_clean:
+                                if not keeper_copied:  # iki kaleci aynı karedeyse KALECILER'e tek kopya
+                                    self._copy_to(path, goalkeeper_dir, filename)
+                                    keeper_copied = True
+                                    stats["kaleci"] += 1
+                                    stats["per_player"][GOALKEEPER_FOLDER_NAME] = \
+                                        stats["per_player"].get(GOALKEEPER_FOLDER_NAME, 0) + 1
+                                csv_rows.append((filename, "Kaleci Havuzu", matched_name, f"{score:.3f}", "-"))
+                                self.log_signal.emit(
+                                    f"[KALECİLER] {matched_name} (skor={score:.2f}): {filename}", "success")
+                                labels.append(f"KALECİLER — {matched_name} ({score:.2f})")
+                            else:
+                                player_dir = os.path.join(output_root, matched_name)
+                                os.makedirs(player_dir, exist_ok=True)
+                                self._copy_to(path, player_dir, filename)
+                                stats["per_player"][matched_name] = stats["per_player"].get(matched_name, 0) + 1
+                                csv_rows.append((filename, "Eşleşti", matched_name, f"{score:.3f}", "-"))
+                                self.log_signal.emit(
+                                    f"[{matched_name}] eşleşti (skor={score:.2f}): {filename}", "success")
+                                labels.append(f"{matched_name} ({score:.2f})")
+                        stats["basarili"] += 1  # fotoğraf sayısı; oyuncu başına kopya sayısı per_player'da
+                        self.thumbnail_signal.emit(make_thumbnail_bytes(img), filename, " · ".join(labels))
 
                 except Exception as e:
                     try:
