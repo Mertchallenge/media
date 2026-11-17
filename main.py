@@ -35,8 +35,9 @@ basın toplantısı gibi değişken ışık/açı/mesafe koşullarında) en yük
   4) ADAPTİF TESPİT: İlk taramada yüz bulunamazsa (uzak/küçük yüzler), görüntü
      otomatik olarak büyütülüp tek seferlik yeniden denenir.
 
-  5) ÇOKLU YÜZ: Karedeki HER yüz ayrı ayrı tanınır; tanınan her oyuncu fotoğrafı kendi
-     klasörüne alır. Fotoğraf yalnızca hiçbir yüz eşleşmezse KARIŞIK'a gider.
+  5) ÇOKLU YÜZ: Karedeki fotoğrafın asıl öznesi olan HER yüz ayrı ayrı tanınır; tanınan her
+     oyuncu fotoğrafı kendi klasörüne alır. Arka plandaki / odak dışı (bulanık, kenarda, çok
+     küçük) yüzler sayılmaz. Fotoğraf yalnızca hiçbir yüz eşleşmezse KARIŞIK'a gider.
 
   6) OTOMATİK ÖNBELLEK YENİLEME: Referans klasörü (foto ekleme/silme/değişiklik) değişirse
      ref_memory.pkl parmak iziyle fark edilir ve otomatik yeniden hesaplanır.
@@ -188,6 +189,16 @@ DEFAULT_MARGIN_THRESHOLD = 0.04
 MIN_FACE_SIZE_PX = 24                # Bu boyuttan küçük yüzler güvenilmez kabul edilir
 BLUR_VARIANCE_THRESHOLD = 8.0        # Laplacian varyansı bunun altındaysa "aşırı bulanık"
 
+# Çoklu yüz modunda "fotoğrafı çekilen kişi" ayrımı — arka plandaki / odak dışı yüzler
+# (ör. kenarda bulanık duran oyuncu, odağı başka birine verilmiş karede bulanık yüz) o oyuncunun
+# klasörüne GİRMEZ. Her yüz, AYNI karedeki en net yüze göre kıyaslanır (göreli); karenin en belirgin
+# yüzü ("odak yüz") hiçbir zaman elenmez. Gerçek örneklerden ayarlandı: odak dışı yüzler en net
+# yüzün %12-43'ü netlikteydi, gruptaki normal oyuncular %64'ün üzerindeydi.
+BG_MIN_SHARP_REL = 0.35              # Yüz netliği, karedeki en net yüzün en az bu oranı olmalı
+BG_EDGE_SHARP_BONUS = 0.35           # Kare merkezinden uzaklaştıkça istenen göreli netlik bu kadar artar
+BG_EDGE_DIST = 0.90                  # Normalize merkez uzaklığı (0=merkez, ~1=kenar) bu değerde ek istek tam olur
+BG_MIN_SIZE_REL = 0.35               # Yüz boyutu, karedeki en büyük yüzün en az bu oranı olmalı
+
 # Kaleci havuzu - bu isimlerden biriyle eşleşen herkes ayrı klasör yerine
 # doğrudan KALECILER klasörüne kopyalanır.
 GOALKEEPER_POOL = {
@@ -311,19 +322,70 @@ def imread_unicode(path: str):
         return None
 
 
+def face_focus_metrics(face, img):
+    """Bir yüzün 'odak' ölçüleri: (netlik, kısa kenar px, normalize merkez uzaklığı).
+    Netlik = yüz kırpımı 96x96'ya indirilip Laplacian varyansı alınır (yüz boyutundan bağımsız kıyas için).
+    Uzaklık: 0 = kare merkezi, ~1 = kenar (yatay/dikey yarım genişliğe göre normalize)."""
+    x1, y1, x2, y2 = [float(v) for v in face.bbox]
+    h_img, w_img = img.shape[:2]
+    xa, ya = max(0, int(x1)), max(0, int(y1))
+    xb, yb = min(w_img, int(x2)), min(h_img, int(y2))
+    crop = img[ya:yb, xa:xb]
+    if crop.size == 0:
+        sharp = 0.0
+    else:
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        gray = cv2.resize(gray, (96, 96), interpolation=cv2.INTER_AREA)
+        sharp = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    min_side = max(0.0, min(x2 - x1, y2 - y1))
+    dx = ((x1 + x2) / 2.0 - w_img / 2.0) / (w_img / 2.0)
+    dy = ((y1 + y2) / 2.0 - h_img / 2.0) / (h_img / 2.0)
+    return sharp, min_side, float(np.hypot(dx, dy))
+
+
+def find_background_faces(faces, img) -> set:
+    """
+    ODAK DIŞI / ARKA PLAN YÜZLERİ: Karede birden fazla yüz varken, fotoğrafın asıl öznesi olmayan
+    yüzlerin indekslerini döndürür. Yüz, AYNI karedeki en net yüze göre:
+      - çok bulanıksa (odak başka birinde), ya da
+      - kare merkezinden uzaklaştıkça daha da yüksek netlik isteyerek (kenardaki bulanık kişi), ya da
+      - en büyük yüze göre çok küçükse
+    arka plan sayılır. En belirgin ("odak") yüz hiçbir zaman elenmez; tek yüzlü karede hiçbir şey elenmez.
+    """
+    if len(faces) < 2:
+        return set()
+    metrics = [face_focus_metrics(f, img) for f in faces]
+    max_sharp = max(m[0] for m in metrics) or 1.0
+    max_side = max(m[1] for m in metrics) or 1.0
+    anchor = max(range(len(faces)), key=lambda i: metrics[i][0] * metrics[i][1] ** 2)
+    skipped = set()
+    for i, (sharp, side, dist) in enumerate(metrics):
+        if i == anchor:
+            continue
+        need = BG_MIN_SHARP_REL + BG_EDGE_SHARP_BONUS * min(1.0, dist / BG_EDGE_DIST)
+        if sharp / max_sharp < need or side / max_side < BG_MIN_SIZE_REL:
+            skipped.add(i)
+    return skipped
+
+
 def identify_all_faces(faces, img, ref_db: dict, threshold: float, margin: float, quality_filter: bool):
     """
-    ÇOKLU YÜZ ALGORİTMASI: Karedeki HER yüz ayrı ayrı kalite süzgecinden ve eşleştirmeden geçer;
-    tanınan her oyuncu fotoğrafı kendi klasörüne alır (gol sevinci, ikili mücadele, toplu çekim).
-    Tanınmayan yüzler (rakip oyuncu, seyirci, belirsiz kare) göz ardı edilir — fotoğraf yalnızca
-    HİÇBİR yüz eşleşmezse KARIŞIK'a gider.
+    ÇOKLU YÜZ ALGORİTMASI: Karedeki fotoğrafın ASIL öznesi olan her yüz ayrı ayrı kalite süzgecinden
+    ve eşleştirmeden geçer; tanınan her oyuncu fotoğrafı kendi klasörüne alır (gol sevinci, ikili
+    mücadele, toplu çekim). Arka plandaki / odak dışı yüzler (bkz. find_background_faces) ve tanınmayan
+    yüzler (rakip, seyirci, belirsiz) göz ardı edilir — fotoğraf yalnızca HİÇBİR yüz eşleşmezse KARIŞIK'a gider.
+    Arka plan ayrımı "Kalite filtresi" ayarına bağlıdır (kapalıysa karedeki bütün yüzler değerlendirilir).
 
-    Döner: (eşleşmeler: {isim: en_iyi_skor}, ret_sebebi: str | None, ret_skoru: float)
+    Döner: (eşleşmeler: {isim: en_iyi_skor}, ret_sebebi: str | None, ret_skoru: float, atlanan_arka_plan: int)
     Ret sebebi yalnızca hiç eşleşme yoksa doludur ve en BÜYÜK (en belirgin) yüzün sebebidir.
     """
+    faces = list(faces or [])
+    skipped = find_background_faces(faces, img) if quality_filter else set()
     matches = {}
     rejected = []  # (yüz_alanı, skor, sebep)
-    for face in faces or []:
+    for i, face in enumerate(faces):
+        if i in skipped:
+            continue
         x1, y1, x2, y2 = face.bbox
         area = max(0.0, float(x2 - x1)) * max(0.0, float(y2 - y1))
         if quality_filter:
@@ -338,11 +400,11 @@ def identify_all_faces(faces, img, ref_db: dict, threshold: float, margin: float
         if score > matches.get(name, -1.0):  # aynı oyuncu iki yüzle eşleşirse en iyi skor kalır
             matches[name] = score
     if matches:
-        return matches, None, 0.0
+        return matches, None, 0.0, len(skipped)
     if not rejected:
-        return {}, "yüz bulunamadı", 0.0
+        return {}, "yüz bulunamadı", 0.0, len(skipped)
     _, score, reason = max(rejected, key=lambda r: r[0])
-    return {}, reason, score
+    return {}, reason, score, len(skipped)
 
 
 def face_quality_check(face, img):
@@ -805,15 +867,17 @@ class ExtractionWorker(QThread):
                         raise ValueError("Görüntü okunamadı / bozuk dosya")
 
                     faces, proc_img = detect_faces_adaptive(face_app, img)
-                    matches, reject_reason, reject_score = identify_all_faces(
+                    matches, reject_reason, reject_score, bg_skipped = identify_all_faces(
                         faces, proc_img, ref_db, self.threshold, self.margin, self.quality_filter)
+                    bg_note = f"arka plan/odak dışı {bg_skipped} yüz atlandı" if bg_skipped else "-"
 
                     if not matches:
                         self._copy_to(path, mixed_dir, filename)
                         stats["karisik"] += 1
                         stats["basarisiz"] += 1
                         stats["per_player"][MIXED_FOLDER_NAME] = stats["per_player"].get(MIXED_FOLDER_NAME, 0) + 1
-                        csv_rows.append((filename, "Karışık", "-", f"{reject_score:.3f}", reject_reason))
+                        csv_rows.append((filename, "Karışık", "-", f"{reject_score:.3f}",
+                                         reject_reason if not bg_skipped else f"{reject_reason}; {bg_note}"))
                         self.log_signal.emit(f"[KARIŞIK] {reject_reason}: {filename}", "warn")
                         self.thumbnail_signal.emit(
                             make_thumbnail_bytes(img), filename, f"KARIŞIK — {reject_reason}")
@@ -829,7 +893,7 @@ class ExtractionWorker(QThread):
                                     stats["kaleci"] += 1
                                     stats["per_player"][GOALKEEPER_FOLDER_NAME] = \
                                         stats["per_player"].get(GOALKEEPER_FOLDER_NAME, 0) + 1
-                                csv_rows.append((filename, "Kaleci Havuzu", matched_name, f"{score:.3f}", "-"))
+                                csv_rows.append((filename, "Kaleci Havuzu", matched_name, f"{score:.3f}", bg_note))
                                 self.log_signal.emit(
                                     f"[KALECİLER] {matched_name} (skor={score:.2f}): {filename}", "success")
                                 labels.append(f"KALECİLER — {matched_name} ({score:.2f})")
@@ -838,7 +902,7 @@ class ExtractionWorker(QThread):
                                 os.makedirs(player_dir, exist_ok=True)
                                 self._copy_to(path, player_dir, filename)
                                 stats["per_player"][matched_name] = stats["per_player"].get(matched_name, 0) + 1
-                                csv_rows.append((filename, "Eşleşti", matched_name, f"{score:.3f}", "-"))
+                                csv_rows.append((filename, "Eşleşti", matched_name, f"{score:.3f}", bg_note))
                                 self.log_signal.emit(
                                     f"[{matched_name}] eşleşti (skor={score:.2f}): {filename}", "success")
                                 labels.append(f"{matched_name} ({score:.2f})")
