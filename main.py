@@ -1109,7 +1109,7 @@ def write_json(path: str, data, private: bool = False):
 
 
 def load_config() -> dict:
-    cfg = {"anthropic_api_key": "", "ai_model": DEFAULT_AI_MODEL, "remember_dept": False, "last_dept": ""}
+    cfg = {"anthropic_api_key": "", "ai_model": DEFAULT_AI_MODEL, "remember_dept": False, "last_dept": "", "theme": "gece"}
     data = read_json(CONFIG_PATH, {})
     if isinstance(data, dict):
         cfg.update({k: v for k, v in data.items() if k in cfg})
@@ -2865,7 +2865,7 @@ class MainWindow(QMainWindow):
         self.clock_timer.timeout.connect(self._tick_clock)
 
         self._build_ui()
-        self.setStyleSheet(STYLE_SHEET)
+        self.setStyleSheet(apply_theme_to_css(STYLE_SHEET))
         self._tick_clock()
         self.clock_timer.start()
         self._refresh_club_cards()
@@ -4165,6 +4165,37 @@ class MainWindow(QMainWindow):
         a_layout.addWidget(self.settings_status)
         layout.addWidget(ai_card)
 
+        theme_card, t_layout = self._card(spacing=14)
+        t_head = QHBoxLayout()
+        t_head.setSpacing(10)
+        t_head.addWidget(self._icon_label("sliders", K_GREEN_HI, 18))
+        t_head.addWidget(self._section_label("Görünüm"))
+        t_head.addStretch(1)
+        t_layout.addLayout(t_head)
+        t_note = QLabel("Renk temasını seç. Değişiklik uygulama yeniden açılınca geçerli olur.")
+        t_note.setObjectName("noteText")
+        t_note.setWordWrap(True)
+        t_layout.addWidget(t_note)
+        theme_row = QHBoxLayout()
+        theme_row.setSpacing(10)
+        self.theme_group = QButtonGroup(self)
+        self.theme_group.setExclusive(True)
+        self.theme_buttons: dict[str, QPushButton] = {}
+        current_theme = load_config().get("theme", "gece")
+        for tkey, tname in THEME_NAMES.items():
+            btn = QPushButton(f"{tname} · {THEME_HINTS[tkey]}")
+            btn.setObjectName("segBtn")
+            btn.setCheckable(True)
+            btn.setChecked(tkey == current_theme)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda checked=False, k=tkey: self._choose_theme(k))
+            self.theme_group.addButton(btn)
+            self.theme_buttons[tkey] = btn
+            theme_row.addWidget(btn)
+        theme_row.addStretch(1)
+        t_layout.addLayout(theme_row)
+        layout.addWidget(theme_card)
+
         about, b_layout = self._card(spacing=8)
         b_layout.addWidget(self._section_label("Hakkında"))
         info = QLabel(
@@ -4211,6 +4242,26 @@ class MainWindow(QMainWindow):
                 cfg["ai_model"] = model_id
         save_config(cfg)
         self._set_settings_status("Kaydedildi.")
+
+    def _choose_theme(self, key: str):
+        cfg = load_config()
+        if cfg.get("theme") == key:
+            return
+        cfg["theme"] = key
+        save_config(cfg)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Tema değişti")
+        box.setText(f"'{THEME_NAMES[key]}' teması kaydedildi.\nŞimdi yeniden başlatayım mı?")
+        yes = box.addButton("Şimdi yeniden başlat", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Sonra", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is yes:
+            try:
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            except Exception:
+                QMessageBox.information(self, "Yeniden başlat",
+                                        "Otomatik yeniden başlatılamadı. Uygulamayı kapatıp tekrar aç.")
 
     def _clear_api_key(self):
         self.api_key_edit.clear()
@@ -4625,18 +4676,84 @@ QPushButton#dangerBtn:hover {{ border: 1px solid {K_RED_HI}; }}
 """
 
 
+# --- Renk temaları ----------------------------------------------------------------------------
+# Tema, mevcut (Gece) paletteki her rengin yeni karşılığını verir. Hem stil sayfasına hem de
+# K_* sabitlerine uygulanır; seçim Ayarlar'da yapılır ve uygulama yeniden açılınca geçerli olur.
+THEME_NAMES = {"gece": "Gece", "orman": "Orman", "gunisigi": "Gün Işığı"}
+THEME_HINTS = {"gece": "Koyu, siyaha yakın", "orman": "Koyu, yeşil tonlu", "gunisigi": "Açık, beyaz-yeşil"}
+
+THEMES = {
+    "gece": {},
+    "orman": {
+        "#0A0E0C": "#0D2519", "#111815": "#153427", "#1E2924": "#25503D", "#2A3E33": "#3C7A5E",
+        "#E9F2ED": "#F3FBF6", "#C9D6CE": "#D3E6DB", "#8CA095": "#A6C5B5", "#5F7267": "#86AA97",
+        "#2FD69A": "#46E8AE", "#1B2A22": "#1E4435", "#16201B": "#1E4435", "#131C17": "#1A4030",
+        "#141C18": "#17382B", "#16241D": "#1A3D2E", "#0F1F17": "#12301F", "#2A3831": "#2F5A47",
+        "#22362C": "#2A4F3E", "#131B17": "#17382B", "#B9C8BF": "#CFE2D6", "#12291F": "#1B4A36",
+        "#141814": "#17382B", "#1B201B": "#1E4435", "#0D0F0D": "#0D2519",
+    },
+    "gunisigi": {
+        "#0A0E0C": "#F2F7F4", "#111815": "#FFFFFF", "#1E2924": "#DCE8E1", "#2A3E33": "#BBD3C5",
+        "#E9F2ED": "#12231B", "#C9D6CE": "#2F4A3D", "#8CA095": "#587163", "#5F7267": "#7B9488",
+        "#2FD69A": "#00985F", "#17BE7F": "#00985F", "#1B2A22": "#E6F2EB", "#16201B": "#E6F2EB",
+        "#131C17": "#F7FBF9", "#141C18": "#EDF5F0", "#16241D": "#E6F2EB", "#0F1F17": "#EDF5F0",
+        "#2A3831": "#D3E2DA", "#22362C": "#D3E2DA", "#131B17": "#EDF5F0", "#B9C8BF": "#2F4A3D",
+        "#12291F": "#D8F0E3", "#1F5A42": "#9FCDB5", "#141814": "#EDF5F0", "#1B201B": "#E6F2EB",
+        "#0D0F0D": "#F2F7F4",
+        "#2A2113": "#FDF1DA", "#F2B24A": "#A86A00", "#2E1719": "#FBE3E4", "#FF7B7F": "#C93B40",
+        "#B69CFF": "#6B4FD6", "#152238": "#E3EEFF", "#7FB2FF": "#2F6FD0", "#221B38": "#ECE8FD",
+        # departman vurguları (açık zeminde okunur olsun)
+        "#7ADCF0": "#2A8FA8", "#F2C36B": "#A86A00", "#B6A9FF": "#6B4FD6", "#F7A48C": "#C25A3D",
+        "#0E2A33": "#DDF1F6", "#1E1A3A": "#ECE8FD", "#33201A": "#FCE9E2",
+    },
+}
+ACTIVE_THEME = "gece"
+
+
+def _theme_map(name: str) -> dict:
+    base = {k.upper(): v for k, v in THEMES.get(name, {}).items()}
+    # Departman pencerelerinin kaydırılmış nötr tonları da aynı hedefe gitsin.
+    for orig, shifted in NEUTRAL_SHIFT.items():
+        if orig.upper() in base:
+            base.setdefault(shifted.upper(), base[orig.upper()])
+    return base
+
+
+def apply_theme(name: str):
+    """K_* renk sabitlerini seçilen temaya çevirir. Pencereler kurulmadan ÖNCE çağrılmalıdır."""
+    global ACTIVE_THEME
+    if name not in THEMES:
+        name = "gece"
+    ACTIVE_THEME = name
+    mapping = _theme_map(name)
+    if not mapping:
+        return
+    g = globals()
+    for const in [n for n in list(g) if n.startswith("K_") and isinstance(g[n], str)]:
+        value = g[const]
+        if re.fullmatch(r"#[0-9A-Fa-f]{6}", value) and value.upper() in mapping:
+            g[const] = mapping[value.upper()]
+
+
+def apply_theme_to_css(css: str) -> str:
+    theme = _theme_map(ACTIVE_THEME)
+    if not theme:
+        return css
+    return re.sub(r"#[0-9A-Fa-f]{6}\b", lambda m: theme.get(m.group(0).upper(), m.group(0)), css)
+
+
 def themed_stylesheet(key: str) -> str:
     """Medya'nın yeşil temasını temel alıp, departmana göre renkleri değiştirir."""
     css = STYLE_SHEET + FORM_STYLE
-    if key == "medya":
-        return css
-    a = ACCENTS[key]
-    mapping = dict(NEUTRAL_SHIFT)
-    mapping.update({
-        "#00A86B": a["acc"], "#2FD69A": a["hi"], "#12291F": a["bg"],
-        "#17BE7F": a["hover"], "#1F5A42": a["border"], "#04140D": a["on"],
-    })
-    return re.sub(r"#[0-9A-Fa-f]{6}\b", lambda m: mapping.get(m.group(0).upper(), m.group(0)), css)
+    if key != "medya":
+        a = ACCENTS[key]
+        mapping = dict(NEUTRAL_SHIFT)
+        mapping.update({
+            "#00A86B": a["acc"], "#2FD69A": a["hi"], "#12291F": a["bg"],
+            "#17BE7F": a["hover"], "#1F5A42": a["border"], "#04140D": a["on"],
+        })
+        css = re.sub(r"#[0-9A-Fa-f]{6}\b", lambda m: mapping.get(m.group(0).upper(), m.group(0)), css)
+    return apply_theme_to_css(css)
 
 
 # --- Ortak arayüz araçları --------------------------------------------------------------------
@@ -8828,6 +8945,8 @@ def main():
     logo_path = club_logo_source_path()
     if logo_path is not None:
         app.setWindowIcon(QIcon(str(logo_path)))  # görev çubuğu / pencere başlığı simgesi
+
+    apply_theme(load_config().get("theme", "gece"))   # pencereler kurulmadan önce
 
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor(K_BG))
