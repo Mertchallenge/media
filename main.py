@@ -4079,7 +4079,8 @@ class NewsPanel(QWidget):
         self.reload_btn.setEnabled(True)
         if error and not items:
             if self._loaded_at is None:
-                self._set_status("Haberler alınamadı. İnternet bağlantısını kontrol edip \"Yenile\"ye bas.")
+                self._set_status("Haberler alınamadı. İnternet bağlantısını kontrol edip \"Yenile\"ye bas.\n"
+                                 f"Ayrıntı: {error[:160]}")
             return
         self._loaded_at = datetime.now()
         clear_layout(self.rows)
