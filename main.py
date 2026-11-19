@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.3.0"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Instagram paneli: giriş duvarı çıkarsa düzgün bir uyarı gösterir, tarayıcı kimliği düzeltildi."
+UPDATE_NOTES = "Fikstür artık TFF sitesinden otomatik güncelleniyor (açılışta ve düzenli aralıklarla)."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -4049,6 +4049,24 @@ def parse_news_feed(xml_bytes: bytes, limit: int = 8) -> list:
     return items[:limit]
 
 
+TFF_STATE_PATH = os.path.join(APP_DIR, "tff_senkron.json")
+TFF_REFRESH_SEC = 6 * 3600          # fikstür en geç bu kadar sürede bir TFF'den tazelenir
+TFF_RETRY_SEC = 25 * 60             # başarısız denemeden sonra bu kadar bekle
+TFF_MIN_MATCHES = 5                 # bundan az Kocaelispor maçı okunduysa sayfa okunamamış sayılır
+
+
+class TffSyncWorker(QThread):
+    """TFF sitesinden tüm haftaları indirip Kocaelispor maçlarını ayıklar (ağ işi; dosyaya yazmaz)."""
+    done_signal = pyqtSignal(dict)
+
+    def run(self):
+        try:
+            res = ks_data.tff_sync(ssl_context=_update_ssl_context(), debug_dir=APP_DIR)
+        except Exception as e:  # noqa: BLE001
+            res = {"all": [], "kocaeli": [], "errors": 99, "weeks_ok": 0, "first_error": str(e)}
+        self.done_signal.emit(res)
+
+
 class NewsWorker(QThread):
     done_signal = pyqtSignal(list, str)   # haberler, hata metni
 
@@ -5413,6 +5431,105 @@ class MainWindow(QMainWindow):
                 break
         self._go_to(PAGE_HOME)
 
+        # Fikstürü TFF'den otomatik güncel tut: açılışta (gerekirse) ve her 30 dakikada bir "süresi doldu mu?" kontrolü
+        self._tff_worker = None
+        self._tff_manual = False
+        self._tff_timer = QTimer(self)
+        self._tff_timer.setInterval(30 * 60 * 1000)
+        self._tff_timer.timeout.connect(self._tff_auto)
+        self._tff_timer.start()
+        QTimer.singleShot(4000, self._tff_auto)
+
+    # ==================================================================
+    # FİKSTÜR: TFF OTOMATİK SENKRON
+    # ==================================================================
+    def _tff_state(self) -> dict:
+        st = read_json(TFF_STATE_PATH, {})
+        return st if isinstance(st, dict) else {}
+
+    def _tff_status_text(self) -> str:
+        st = self._tff_state()
+        if st.get("last_ok"):
+            try:
+                when = datetime.fromisoformat(st["last_ok"]).strftime("%d.%m.%Y %H:%M")
+            except ValueError:
+                when = st["last_ok"]
+            text = f"Fikstür TFF'den otomatik güncellenir. Son eşitleme: {when} · Kocaelispor {st.get('count', '?')} maç"
+            if st.get("error"):
+                text += f"\nSon deneme başarısız oldu: {st['error']}"
+            return text
+        if st.get("last_try"):
+            return f"Fikstür TFF'den okunamadı ({st.get('error') or 'bilinmeyen hata'}). Mevcut fikstür kullanılıyor."
+        return "Fikstür TFF'den otomatik güncellenir (henüz eşitlenmedi)."
+
+    @staticmethod
+    def _age_sec(iso_text) -> "float | None":
+        try:
+            return (datetime.now() - datetime.fromisoformat(iso_text or "")).total_seconds()
+        except ValueError:
+            return None
+
+    def _tff_auto(self):
+        st = self._tff_state()
+        ok_age = self._age_sec(st.get("last_ok"))
+        try_age = self._age_sec(st.get("last_try"))
+        if ok_age is not None and ok_age < TFF_REFRESH_SEC:
+            return                      # yakın zamanda başarıyla eşitlendi
+        if try_age is not None and try_age < TFF_RETRY_SEC:
+            return                      # yakın zamanda denendi (başarısızsa biraz bekle)
+        self._tff_sync_start(manual=False)
+
+    def _tff_sync_start(self, manual: bool = False):
+        if self._tff_worker is not None and self._tff_worker.isRunning():
+            return
+        self._tff_manual = manual
+        st = self._tff_state()
+        st["last_try"] = datetime.now().isoformat(timespec="seconds")
+        write_json(TFF_STATE_PATH, st)
+        if getattr(self, "tff_status", None) is not None:
+            self.tff_status.setText("TFF'den fikstür indiriliyor… (birkaç saniye sürer)")
+        self._tff_worker = TffSyncWorker(self)
+        self._tff_worker.done_signal.connect(self._tff_sync_done)
+        self._tff_worker.start()
+
+    def _tff_sync_done(self, res: dict):
+        st = self._tff_state()
+        matches = res.get("kocaeli") or []
+        if len(matches) >= TFF_MIN_MATCHES:
+            try:
+                raw = ks_data.load_raw()
+                merged, stats = ks_data.tff_merge(raw.get("fixtures", []), matches)
+                if stats["added"] or stats["updated"]:
+                    ks_data.save_fixtures(merged)
+                    MANUAL_FIXTURES[:] = ks_data.load_data()["fixtures"]
+                    self._refresh_club_cards()
+                    self._refresh_matches_page()
+                st.update({"last_ok": datetime.now().isoformat(timespec="seconds"), "count": len(matches),
+                           "error": "", "added": stats["added"], "updated": stats["updated"]})
+                if self._tff_manual:
+                    QMessageBox.information(
+                        self, "Fikstür",
+                        f"TFF ile eşitlendi: {len(matches)} maç ({stats['added']} yeni, {stats['updated']} değişen).")
+            except Exception as e:  # noqa: BLE001
+                st["error"] = f"kaydedilemedi: {e}"
+                if self._tff_manual:
+                    QMessageBox.warning(self, "Fikstür", f"Fikstür kaydedilemedi:\n{e}")
+        else:
+            if res.get("first_error"):
+                reason = res["first_error"]
+            elif res.get("weeks_ok", 0) == 0:
+                reason = "sayfa okunamadı (maç bulunamadı)"
+            else:
+                reason = f"yalnız {len(matches)} Kocaelispor maçı bulundu"
+            st["error"] = str(reason)[:120]
+            if self._tff_manual:
+                dbg = os.path.join(APP_DIR, "tff_debug.html")
+                extra = f"\n\nSorun giderme için sayfa şuraya kaydedildi:\n{dbg}" if os.path.isfile(dbg) else ""
+                QMessageBox.warning(self, "Fikstür", f"TFF'den fikstür alınamadı:\n{reason}{extra}")
+        write_json(TFF_STATE_PATH, st)
+        if getattr(self, "tff_status", None) is not None:
+            self.tff_status.setText(self._tff_status_text())
+
     # ==================================================================
     # ORTAK PARÇALAR
     # ==================================================================
@@ -6150,7 +6267,7 @@ class MainWindow(QMainWindow):
         nm = get_next_fixture()
         if nm is None:
             self.next_layout.addLayout(head)
-            empty = QLabel("Yaklaşan maç bulunamadı.\nFikstür listesini güncellemek için yeni bir ekran görüntüsü gönder.")
+            empty = QLabel("Yaklaşan maç bulunamadı.\nFikstür TFF'den otomatik güncellenir (Ayarlar → Fikstürü TFF'den şimdi güncelle).")
             empty.setObjectName("emptyHint")
             empty.setWordWrap(True)
             self.next_layout.addWidget(empty)
@@ -6970,6 +7087,16 @@ class MainWindow(QMainWindow):
         upd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         upd_btn.clicked.connect(lambda: start_update_check(self, manual=True))
         b_layout.addWidget(upd_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.tff_status = QLabel(self._tff_status_text())
+        self.tff_status.setObjectName("noteText")
+        self.tff_status.setWordWrap(True)
+        b_layout.addWidget(self.tff_status)
+        tff_btn = QPushButton("Fikstürü TFF'den şimdi güncelle")
+        tff_btn.setObjectName("ghostBtn")
+        tff_btn.setFixedHeight(38)
+        tff_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        tff_btn.clicked.connect(lambda: self._tff_sync_start(manual=True))
+        b_layout.addWidget(tff_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(about)
         layout.addStretch(1)
 

@@ -16,7 +16,10 @@ hiçbir veri kaybı olmadan buraya taşınmış olur.
 
 import json
 import os
+import re
 import sys
+import time as _time
+import urllib.request
 from datetime import date
 from pathlib import Path
 
@@ -242,3 +245,276 @@ def save_players(players: list) -> None:
     raw = load_raw()
     raw["players"] = players
     save_raw(raw)
+
+
+
+# ==========================================================================================
+#  TFF (tff.org) FİKSTÜR OKUYUCU
+#  Süper Lig sayfasının her haftasını (hafta=1..34) indirir, Kocaelispor maçlarını ayıklar.
+#  Sayfa yapısına bağımlılığı en aza indirmek için etiket/sınıf adlarına bakmaz: her tablo satırının
+#  METİN parçalarından tarih, saat, skor ve iki takım adını bulur.
+# ==========================================================================================
+
+TFF_WEEK_URL = "https://www.tff.org/Default.aspx?pageID=198&hafta={week}"
+TFF_WEEKS = 34
+CLUB_NAME = KULUP_ADI
+
+_TR_UP = str.maketrans({"i": "İ", "ı": "I"})
+_TR_LOW = str.maketrans({"İ": "i", "I": "ı"})
+
+
+def _tr_upper(t: str) -> str:
+    return t.translate(_TR_UP).upper()
+
+
+def _tr_title(t: str) -> str:
+    out = []
+    for w in t.translate(_TR_LOW).lower().split():
+        out.append(w[:1].translate(_TR_UP).upper() + w[1:] if w else w)
+    return " ".join(out)
+
+
+# TFF'deki (büyük harfli, uzun) kulüp adı içinde geçen parça -> uygulamadaki kısa ad
+_TEAM_KEYWORDS = [
+    ("KOCAELİSPOR", "Kocaelispor"), ("GENÇLERBİRLİĞİ", "Gençlerbirliği"), ("ERZURUM", "Erzurumspor"),
+    ("KONYASPOR", "Konyaspor"), ("GAZİANTEP", "Gaziantep FK"), ("RİZESPOR", "Rizespor"),
+    ("GALATASARAY", "Galatasaray"), ("GÖZTEPE", "Göztepe"), ("EYÜPSPOR", "Eyüpspor"),
+    ("ALANYASPOR", "Alanyaspor"), ("BAŞAKŞEHİR", "Başakşehir"), ("KASIMPAŞA", "Kasımpaşa"),
+    ("SAMSUNSPOR", "Samsunspor"), ("FENERBAHÇE", "Fenerbahçe"), ("AMED", "Amedspor"),
+    ("TRABZONSPOR", "Trabzonspor"), ("BEŞİKTAŞ", "Beşiktaş"), ("ÇORUM", "Çorum FK"),
+]
+_TEAM_STRIP = ("A.Ş.", "A.S.", "FUTBOL KULÜBÜ", "SPORTİF FAALİYETLER", "SPOR KULÜBÜ", "KULÜBÜ", "CORENDON", "ÇAYKUR",
+               "TÜMOSAN", "TRENDYOL", "ARCA", "PAPARA", "RAMS", "BAHÇEŞEHİR", "LTD.", "ŞTİ.")
+
+# Ev sahibi takımın bilinen stadyumu (TFF liste sayfası stadyum vermiyor). Bilinmeyen boş kalır.
+TEAM_STADIUMS = {
+    "Kocaelispor": "Kocaeli Stadyumu", "Beşiktaş": "Tüpraş Stadyumu", "Alanyaspor": "Bahçeşehir Okulları Stadyumu",
+    "Eyüpspor": "Pendik Stadyumu", "Çorum FK": "Çorum Stadyumu", "Erzurumspor": "Kazım Karabekir Stadyumu",
+    "Gençlerbirliği": "Eryaman Stadyumu", "Fenerbahçe": "Ülker Stadyumu", "Galatasaray": "RAMS Park",
+    "Trabzonspor": "Papara Park", "Başakşehir": "Başakşehir Fatih Terim Stadyumu",
+    "Samsunspor": "Samsun Yeni 19 Mayıs Stadyumu", "Göztepe": "Gürsel Aksel Stadyumu",
+    "Rizespor": "Çaykur Didi Stadyumu", "Konyaspor": "Konya Büyükşehir Stadyumu",
+    "Gaziantep FK": "Gaziantep Stadyumu", "Kasımpaşa": "Recep Tayyip Erdoğan Stadyumu",
+    "Amedspor": "Diyarbakır Stadyumu",
+}
+
+
+def tff_team_name(raw: str) -> str:
+    up = _tr_upper(raw.strip())
+    for key, name in _TEAM_KEYWORDS:
+        if key in up:
+            return name
+    for junk in _TEAM_STRIP:
+        up = up.replace(junk, " ")
+    return _tr_title(" ".join(up.split())) or raw.strip()
+
+
+_DATE_RE = re.compile(r"(\d{1,2})\.(\d{1,2})\.(\d{4})")
+_TIME_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)")
+_SCORE_RE = re.compile(r"^\d{1,2}\s*[-–]\s*\d{1,2}$")
+_PLACEHOLDERS = {"-", "–", "—", "v", "vs", "?", "- -"}
+_STOPWORDS = {"DETAYLAR", "DETAY", "MAÇ DETAYI", "MAÇ", "İSTATİSTİK", "HAFTA", "TARİH", "SAAT", "SKOR", "STAT", "STADYUM",
+              "EV SAHİBİ", "DEPLASMAN", "TAKIM", "O", "G", "B", "M", "A", "Y", "AV", "P", "GENEL", "İÇ SAHA", "DIŞ SAHA",
+              "DEVRE", "FİKSTÜR", "PUAN CETVELİ", "HAKEM", "TARAFSIZ", "TEKNİK DİREKTÖR", "SEZON"}
+
+
+_TAG_RE = re.compile(r"<!--.*?-->|<(/?)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>|([^<]+)", re.S)
+_SKIP_RE = re.compile(r"<(script|style)\b.*?</\1\s*>", re.S | re.I)
+_ENTITIES = {"nbsp": " ", "amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'", "#39": "'"}
+
+
+def _unescape(text: str) -> str:
+    def rep(m):
+        name = m.group(1)
+        if name in _ENTITIES:
+            return _ENTITIES[name]
+        try:
+            if name[:2] in ("#x", "#X"):
+                return chr(int(name[2:], 16))
+            if name[:1] == "#":
+                return chr(int(name[1:]))
+        except (ValueError, OverflowError):
+            pass
+        return m.group(0)
+    return re.sub(r"&(#?[a-zA-Z0-9]+);", rep, text)
+
+
+def _collect_rows(html: str) -> list:
+    """Tablo satırlarının (en içteki <tr>) metin parçalarını sırayla toplar.
+    Standart kütüphanenin html.parser'ına bağımlı değil (paketli uygulamada garanti olmayabilir)."""
+    html = _SKIP_RE.sub(" ", html)
+    rows, stack = [], []
+    for m in _TAG_RE.finditer(html):
+        closing, tag, text = m.group(1), m.group(2), m.group(3)
+        if tag:
+            tag = tag.lower()
+            if tag == "tr":
+                if closing:
+                    if stack:
+                        rows.append(stack.pop())
+                else:
+                    stack.append([])
+            elif tag == "br" and stack:
+                stack[-1].append("")
+        elif text is not None and stack:
+            t = " ".join(_unescape(text).split())
+            if t:
+                stack[-1].append(t)
+    rows.extend(r for r in reversed(stack))      # kapatılmamış <tr>'ler
+    return rows
+
+
+def _is_team_token(tok: str) -> bool:
+    if _DATE_RE.search(tok) or _TIME_RE.fullmatch(tok) or _SCORE_RE.match(tok) or tok.lower() in _PLACEHOLDERS:
+        return False
+    if _tr_upper(tok) in _STOPWORDS or len(tok) > 70:
+        return False
+    letters = sum(c.isalpha() for c in tok)
+    return letters >= 3 and letters >= 0.6 * len(tok.replace(" ", ""))
+
+
+def _tok_date(tok):
+    m = _DATE_RE.search(tok)
+    if not m:
+        return None
+    try:
+        return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        return None
+
+
+def _tok_time(tok):
+    m = _TIME_RE.search(tok)
+    return f"{int(m.group(1)):02d}:{m.group(2)}" if m else None
+
+
+def tff_parse_week(html: str) -> list:
+    """Bir hafta sayfasından maçları çıkarır: [{"home","away","date" (ISO),"time","score"}].
+    Bir satırda tek maç (tarih/saat sırası fark etmez) ya da birden çok maç (sırayla) olabilir."""
+    try:
+        rows = _collect_rows(html)
+    except Exception:
+        rows = []
+    out = []
+    carry_date = None
+
+    def emit(home, away, d, t, score):
+        if d is None:
+            return
+        out.append({"home": tff_team_name(home), "away": tff_team_name(away), "date": d.isoformat(),
+                    "time": t or "", "score": score if _SCORE_RE.match(score or "") else ""})
+
+    for tokens in rows:
+        row_d = next((d for d in map(_tok_date, tokens) if d), None)
+        row_t = next((t for t in map(_tok_time, tokens) if t), None)
+        pairs = [i for i, tok in enumerate(tokens)
+                 if (_SCORE_RE.match(tok) or tok.lower() in _PLACEHOLDERS)
+                 and 0 < i < len(tokens) - 1
+                 and _is_team_token(tokens[i - 1]) and _is_team_token(tokens[i + 1])]
+        if len(pairs) == 1:
+            i = pairs[0]
+            emit(tokens[i - 1], tokens[i + 1], row_d or carry_date, row_t, tokens[i])
+        elif len(pairs) > 1:
+            cur_d, cur_t = carry_date, None
+            for i, tok in enumerate(tokens):
+                d = _tok_date(tok)
+                if d:
+                    cur_d = d
+                t = _tok_time(tok)
+                if t:
+                    cur_t = t
+                if i in pairs:
+                    emit(tokens[i - 1], tokens[i + 1], cur_d, cur_t, tok)
+                    cur_t = None
+        else:
+            teams = [tok for tok in tokens if _is_team_token(tok)]
+            if len(teams) == 2 and (row_d or carry_date) and row_t:
+                emit(teams[0], teams[1], row_d or carry_date, row_t, "")
+        if row_d is not None:
+            carry_date = row_d
+    return out
+
+
+def _decode(data: bytes) -> str:
+    for enc in ("utf-8", "windows-1254"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", "replace")
+
+
+def tff_fetch_week(week: int, ssl_context=None, timeout: int = 20) -> str:
+    req = urllib.request.Request(
+        TFF_WEEK_URL.format(week=week),
+        headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                               "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                 "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.5"})
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context) as r:
+        return _decode(r.read())
+
+
+def tff_sync(ssl_context=None, progress=None, debug_dir=None, fetch=None) -> dict:
+    """Tüm haftaları indirip Kocaelispor maçlarını döndürür.
+    {"all": [...tüm maçlar], "kocaeli": [...], "errors": n, "weeks_ok": n, "first_error": str}"""
+    fetch = fetch or (lambda w: tff_fetch_week(w, ssl_context))
+    seen, allm, errors, weeks_ok, first_error = set(), [], 0, 0, ""
+    saved_debug = False
+    for w in range(1, TFF_WEEKS + 1):
+        if progress:
+            progress(w)
+        html = None
+        for attempt in (1, 2):
+            try:
+                html = fetch(w)
+                break
+            except Exception as e:  # noqa: BLE001
+                first_error = first_error or str(e)
+                _time.sleep(0.5)
+        if html is None:
+            errors += 1
+            if errors >= 3 and weeks_ok == 0:
+                break            # ağ yok / engelli: boşuna 34 hafta deneme
+            continue
+        ms = tff_parse_week(html)
+        if ms:
+            weeks_ok += 1
+        elif debug_dir is not None and not saved_debug:
+            try:                 # okunamayan ilk sayfayı sorun giderme için sakla
+                Path(debug_dir).mkdir(parents=True, exist_ok=True)
+                (Path(debug_dir) / "tff_debug.html").write_text(html, encoding="utf-8")
+                saved_debug = True
+            except OSError:
+                pass
+        for m in ms:
+            key = (m["date"], m["home"], m["away"])
+            if key not in seen:
+                seen.add(key)
+                allm.append(m)
+        _time.sleep(0.25)
+    kocaeli = [m for m in allm if CLUB_NAME in (m["home"], m["away"])]
+    return {"all": allm, "kocaeli": kocaeli, "errors": errors, "weeks_ok": weeks_ok, "first_error": first_error}
+
+
+def tff_merge(raw_fixtures: list, kocaeli_matches: list):
+    """Mevcut fikstür listesini TFF maçlarıyla birleştirir (ev sahibi+deplasman çifti anahtar).
+    TFF'de olan maçın tarih/saati güncellenir, stadyum varsa korunur / yoksa tablodan doldurulur.
+    TFF'de olmayan (elle eklenmiş, ör. kupa) kayıtlara dokunulmaz.
+    Döner: (yeni_liste, {"added","updated","unchanged"})"""
+    by_key = {(f.get("home", ""), f.get("away", "")): dict(f) for f in raw_fixtures}
+    stats = {"added": 0, "updated": 0, "unchanged": 0}
+    for m in kocaeli_matches:
+        key = (m["home"], m["away"])
+        old = by_key.get(key)
+        stadium = (old or {}).get("stadium") or TEAM_STADIUMS.get(m["home"], "")
+        new = {"home": m["home"], "away": m["away"], "date": m["date"],
+               "time": m["time"] or (old or {}).get("time", ""), "stadium": stadium}
+        if old is None:
+            stats["added"] += 1
+        elif (old.get("date"), old.get("time"), old.get("stadium", "")) != (new["date"], new["time"], new["stadium"]):
+            stats["updated"] += 1
+        else:
+            stats["unchanged"] += 1
+        by_key[key] = new
+    merged = sorted(by_key.values(), key=lambda f: (f.get("date", ""), f.get("time", "")))
+    return merged, stats
