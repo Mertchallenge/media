@@ -3663,8 +3663,141 @@ if HAS_WEBENGINE:
             return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
 
+class InstagramPanel(QWidget):
+    """Kocaelispor'un Instagram sayfasını uygulama içinde gösteren mini görünüm (ana sayfada)."""
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.extra = load_medya_extra()
+        self._view = None
+        self._built = False
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        card, c = win._card(margins=(14, 14, 14, 14), spacing=10)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        head.addWidget(win._section_label("Instagram"))
+        head.addStretch(1)
+        reload_btn = QPushButton("Yenile")
+        reload_btn.setObjectName("linkBtn")
+        reload_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        reload_btn.clicked.connect(self.reload)
+        head.addWidget(reload_btn)
+        open_btn = QPushButton("Tarayıcıda aç")
+        open_btn.setObjectName("linkBtn")
+        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_btn.clicked.connect(self._open_browser)
+        head.addWidget(open_btn)
+        c.addLayout(head)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(QLabel("Hesap  @"))
+        self.handle = QLineEdit(str(self.extra.get("instagram_handle") or "kocaelispor"))
+        self.handle.setMinimumHeight(32)
+        self.handle.returnPressed.connect(self.reload)
+        row.addWidget(self.handle, 1)
+        c.addLayout(row)
+        self.host = QVBoxLayout()
+        self.host.setContentsMargins(0, 0, 0, 0)
+        c.addLayout(self.host, 1)
+        outer.addWidget(card, 1)
+
+    def _handle_text(self) -> str:
+        h = self.handle.text().strip().lstrip("@").strip("/ ")
+        return h or "kocaelispor"
+
+    def _open_browser(self):
+        QDesktopServices.openUrl(QUrl(f"https://www.instagram.com/{self._handle_text()}/"))
+
+    def reload(self):
+        self.extra["instagram_handle"] = self._handle_text()
+        save_medya_extra(self.extra)
+        if self._view is not None:
+            self._view.setUrl(QUrl(f"https://www.instagram.com/{self._handle_text()}/embed/"))
+
+    def _install(self):
+        self.install_btn.setEnabled(False)
+        self.install_bar.setVisible(True)
+        self.install_status.setText("Kuruluyor… (internet bağlantısı gerekir, lütfen bekle)")
+        self._pip_worker = PipInstallWorker(self.spec)
+        self._pip_worker.done_signal.connect(self._install_done)
+        self._pip_worker.start()
+
+    def _install_done(self, ok: bool, output: str):
+        self.install_bar.setVisible(False)
+        if ok:
+            self.install_status.setText("Kurulum tamamlandı. Mini Instagram için uygulamayı yeniden başlat.")
+            self.restart_btn.setVisible(True)
+        else:
+            self.install_btn.setEnabled(True)
+            self.install_status.setText("Kurulum başarısız oldu. Ayrıntı:\n" + output)
+
+    def _restart_app(self):
+        try:
+            subprocess.Popen([sys.executable] + sys.argv)
+        except Exception as e:
+            self.install_status.setText(f"Yeniden başlatılamadı ({e}). Uygulamayı kapatıp elle aç.")
+            return
+        QApplication.quit()
+
+    def ensure(self):
+        """Web görünümü ağır olduğu için ilk gösterimde (tembel) kurulur."""
+        if self._built:
+            return
+        self._built = True
+        if not HAS_WEBENGINE:
+            box = QWidget()
+            c = QVBoxLayout(box)
+            c.setContentsMargins(0, 6, 0, 0)
+            c.setSpacing(10)
+            msg = QLabel("Instagram'ı uygulamanın içinde göstermek için Qt'nin web bileşeni (PyQt6-WebEngine) "
+                         "gerekiyor. Tek seferlik kurulum birkaç dakika sürer.")
+            msg.setWordWrap(True)
+            msg.setObjectName("noteText")
+            c.addWidget(msg)
+            self.spec = webengine_pip_spec()
+            spec_lab = QLabel(f"Kurulacak: {self.spec}")
+            spec_lab.setObjectName("dateSub")
+            c.addWidget(spec_lab)
+            self.install_btn = QPushButton("Şimdi kur")
+            self.install_btn.setObjectName("startBtn")
+            self.install_btn.setFixedHeight(44)
+            self.install_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.install_btn.clicked.connect(self._install)
+            c.addWidget(self.install_btn)
+            self.install_bar = QProgressBar()
+            self.install_bar.setRange(0, 0)
+            self.install_bar.setTextVisible(False)
+            self.install_bar.setFixedHeight(8)
+            self.install_bar.setStyleSheet(
+                f"QProgressBar {{ background: {K_LINE}; border: none; border-radius: 4px; }}"
+                f"QProgressBar::chunk {{ background: {K_GREEN}; border-radius: 4px; }}")
+            self.install_bar.setVisible(False)
+            c.addWidget(self.install_bar)
+            self.install_status = QLabel("")
+            self.install_status.setObjectName("dateSub")
+            self.install_status.setWordWrap(True)
+            c.addWidget(self.install_status)
+            self.restart_btn = QPushButton("Uygulamayı yeniden başlat")
+            self.restart_btn.setObjectName("startBtn")
+            self.restart_btn.setFixedHeight(44)
+            self.restart_btn.clicked.connect(self._restart_app)
+            self.restart_btn.setVisible(False)
+            c.addWidget(self.restart_btn)
+            c.addStretch(1)
+            self.host.addWidget(box)
+            return
+        view = QWebEngineView()
+        view.setPage(InstagramPage(view))
+        view.page().setBackgroundColor(QColor(K_CARD))
+        view.setUrl(QUrl(f"https://www.instagram.com/{self._handle_text()}/embed/"))
+        self.host.addWidget(view)
+        self._view = view
+
+
 class SharePage(QWidget):
-    TABS = ("Sosyal medya", "İçerik dengesi", "Instagram")
+    TABS = ("Sosyal medya", "İçerik dengesi")
 
     def __init__(self, win):
         super().__init__()
@@ -3709,7 +3842,6 @@ class SharePage(QWidget):
         self.tabs = QStackedWidget()
         self.tabs.addWidget(self._build_social_tab())
         self.tabs.addWidget(self._build_balance_tab())
-        self.tabs.addWidget(self._build_instagram_tab())
         outer.addWidget(self.tabs, 1)
 
     def _set_tab(self, i: int):
@@ -3733,8 +3865,6 @@ class SharePage(QWidget):
         i = self.tabs.currentIndex()
         if i == 1:
             self._refresh_balance()
-        elif i == 2:
-            self._ensure_instagram()
         else:
             self._refresh_social_summary()
 
@@ -3743,139 +3873,6 @@ class SharePage(QWidget):
         lab.setObjectName("emptyHint")
         lab.setWordWrap(True)
         return lab
-
-    # ---------------------------------------------------------------- Kocaelispor Instagram (mini görünüm)
-    def _build_instagram_tab(self) -> QWidget:
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(16)
-        bar, b = self.win._card(margins=(18, 12, 18, 12), spacing=8)
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        row.addWidget(QLabel("Hesap  @"))
-        self.ig_handle = QLineEdit(str(self.extra.get("instagram_handle") or "kocaelispor"))
-        self.ig_handle.setFixedWidth(220)
-        self.ig_handle.setMinimumHeight(34)
-        self.ig_handle.returnPressed.connect(self._ig_reload)
-        row.addWidget(self.ig_handle)
-        reload_btn = QPushButton("Yenile")
-        reload_btn.setObjectName("smallBtn")
-        reload_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        reload_btn.clicked.connect(self._ig_reload)
-        row.addWidget(reload_btn)
-        open_btn = QPushButton("Tarayıcıda aç")
-        open_btn.setObjectName("outlineSmall")
-        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        open_btn.clicked.connect(self._ig_open_browser)
-        row.addWidget(open_btn)
-        row.addStretch(1)
-        b.addLayout(row)
-        lay.addWidget(bar)
-        self.ig_host = QHBoxLayout()
-        self.ig_host.setContentsMargins(0, 0, 0, 0)
-        lay.addLayout(self.ig_host, 1)
-        self._ig_view = None
-        return page
-
-    def _ig_handle_text(self) -> str:
-        h = self.ig_handle.text().strip().lstrip("@").strip("/ ")
-        return h or "kocaelispor"
-
-    def _ig_open_browser(self):
-        QDesktopServices.openUrl(QUrl(f"https://www.instagram.com/{self._ig_handle_text()}/"))
-
-    def _ig_install(self):
-        self.ig_install_btn.setEnabled(False)
-        self.ig_install_bar.setVisible(True)
-        self.ig_install_status.setText("Kuruluyor… (internet bağlantısı gerekir, lütfen bekle)")
-        self._pip_worker = PipInstallWorker(self.ig_spec)
-        self._pip_worker.done_signal.connect(self._ig_install_done)
-        self._pip_worker.start()
-
-    def _ig_install_done(self, ok: bool, output: str):
-        self.ig_install_bar.setVisible(False)
-        if ok:
-            self.ig_install_status.setText("Kurulum tamamlandı. Mini Instagram için uygulamayı yeniden başlat.")
-            self.ig_restart_btn.setVisible(True)
-        else:
-            self.ig_install_btn.setEnabled(True)
-            self.ig_install_status.setText("Kurulum başarısız oldu. Ayrıntı:\n" + output)
-
-    def _restart_app(self):
-        try:
-            subprocess.Popen([sys.executable] + sys.argv)
-        except Exception as e:
-            self.ig_install_status.setText(f"Yeniden başlatılamadı ({e}). Uygulamayı kapatıp elle aç.")
-            return
-        QApplication.quit()
-
-    def _ig_reload(self):
-        self.extra["instagram_handle"] = self._ig_handle_text()
-        save_medya_extra(self.extra)
-        if self._ig_view is not None:
-            self._ig_view.setUrl(QUrl(f"https://www.instagram.com/{self._ig_handle_text()}/embed/"))
-
-    def _ensure_instagram(self):
-        """Web görünümü ağır olduğu için ilk açılışta (tembel) kurulur."""
-        if self._ig_view is not None or getattr(self, "_ig_built", False):
-            return
-        self._ig_built = True
-        if not HAS_WEBENGINE:
-            card, c = self.win._card(margins=(26, 24, 26, 24), spacing=12)
-            c.addWidget(self.win._section_label("Mini Instagram — tek seferlik kurulum"))
-            msg = QLabel("Kocaelispor'un Instagram sayfasını uygulamanın içinde göstermek için Qt'nin web bileşeni "
-                         "(PyQt6-WebEngine) gerekiyor. Aşağıdaki düğme onu bu uygulamanın kullandığı Python'a kurar; "
-                         "birkaç dakika sürebilir. Kurulum bitince uygulama kendini yeniden başlatır.")
-            msg.setWordWrap(True)
-            msg.setObjectName("noteText")
-            c.addWidget(msg)
-            self.ig_spec = webengine_pip_spec()
-            spec_lab = QLabel(f"Kurulacak: {self.ig_spec}")
-            spec_lab.setObjectName("dateSub")
-            c.addWidget(spec_lab)
-            self.ig_install_btn = QPushButton("Şimdi kur")
-            self.ig_install_btn.setObjectName("startBtn")
-            self.ig_install_btn.setFixedSize(180, 46)
-            self.ig_install_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.ig_install_btn.clicked.connect(self._ig_install)
-            c.addWidget(self.ig_install_btn, 0, Qt.AlignmentFlag.AlignLeft)
-            self.ig_install_bar = QProgressBar()
-            self.ig_install_bar.setRange(0, 0)
-            self.ig_install_bar.setTextVisible(False)
-            self.ig_install_bar.setFixedHeight(8)
-            self.ig_install_bar.setStyleSheet(
-                f"QProgressBar {{ background: {K_LINE}; border: none; border-radius: 4px; }}"
-                f"QProgressBar::chunk {{ background: {K_GREEN}; border-radius: 4px; }}")
-            self.ig_install_bar.setVisible(False)
-            c.addWidget(self.ig_install_bar)
-            self.ig_install_status = QLabel("")
-            self.ig_install_status.setObjectName("dateSub")
-            self.ig_install_status.setWordWrap(True)
-            c.addWidget(self.ig_install_status)
-            self.ig_restart_btn = QPushButton("Uygulamayı yeniden başlat")
-            self.ig_restart_btn.setObjectName("startBtn")
-            self.ig_restart_btn.setFixedSize(240, 46)
-            self.ig_restart_btn.clicked.connect(self._restart_app)
-            self.ig_restart_btn.setVisible(False)
-            c.addWidget(self.ig_restart_btn, 0, Qt.AlignmentFlag.AlignLeft)
-            c.addStretch(1)
-            self.ig_host.addWidget(card)
-            return
-        self.ig_host.addStretch(1)
-        phone = QFrame()
-        phone.setFixedWidth(450)
-        phone.setStyleSheet(f"QFrame {{ background: {K_CARD}; border: 1px solid {K_LINE2}; border-radius: 26px; }}")
-        pl = QVBoxLayout(phone)
-        pl.setContentsMargins(8, 12, 8, 12)
-        view = QWebEngineView()
-        view.setPage(InstagramPage(view))
-        view.page().setBackgroundColor(QColor(K_CARD))
-        view.setUrl(QUrl(f"https://www.instagram.com/{self._ig_handle_text()}/embed/"))
-        pl.addWidget(view)
-        self._ig_view = view
-        self.ig_host.addWidget(phone)
-        self.ig_host.addStretch(1)
 
     # ---------------------------------------------------------------- 2) İçerik dengesi
     def _build_balance_tab(self) -> QWidget:
@@ -4980,7 +4977,10 @@ class MainWindow(QMainWindow):
         title, sub = PAGE_META[index]
         self.page_title.setText(title)
         self.page_sub.setText(sub)
-        if index == PAGE_REVIEW:
+        if index == PAGE_HOME:
+            self._refresh_home_tiles()
+            self.ig_panel.ensure()
+        elif index == PAGE_REVIEW:
             self.review_page.on_show()
         elif index == PAGE_SHARE:
             self.share_page.on_show()
@@ -5003,45 +5003,126 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(page)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(20)
-        row.addWidget(self._build_home_hero(), 1)
-        row.addWidget(self._build_right_column())
+        row.addWidget(self._scroll(self._build_home_main()), 1)
+        self.ig_panel = InstagramPanel(self)
+        self.ig_panel.setFixedWidth(410)
+        row.addWidget(self.ig_panel)
         return page
 
-    def _build_home_hero(self) -> QWidget:
-        """Ferah karşılama alanı (üstte) + doğum günleri kartı (altta) — sol taraf boş kalmasın."""
+    def _build_home_main(self) -> QWidget:
+        """Sol taraf: karşılama + hızlı erişim kutuları + sıradaki maç / doğum günleri + fikstür."""
         column = QWidget()
         layout = QVBoxLayout(column)
-        layout.setContentsMargins(12, 28, 12, 12)
-        layout.setSpacing(24)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(16)
 
-        icon_box = QLabel()
-        icon_box.setObjectName("iconBox")
-        icon_box.setFixedSize(60, 60)
-        icon_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pixmap = make_pixmap("image", K_GREEN_HI, 26)
-        if pixmap is not None:
-            icon_box.setPixmap(pixmap)
-        layout.addWidget(icon_box, 0, Qt.AlignmentFlag.AlignLeft)
+        self.home_greet = QLabel("")
+        self.home_greet.setObjectName("pageTitle")
+        layout.addWidget(self.home_greet)
 
-        title = QLabel("Yüz ayıklamaya hazır mısın?")
-        title.setObjectName("pageTitle")
-        title.setWordWrap(True)
-        layout.addWidget(title)
+        grid = QGridLayout()
+        grid.setSpacing(14)
+        self.home_tile_subs = {}
+        tiles = (
+            ("extract", "image", "Yüz ayıklama", lambda: self._go_to(PAGE_EXTRACT)),
+            ("review", "check", "İnceleme", lambda: self._go_to(PAGE_REVIEW)),
+            ("social", "share", "Sosyal medya", lambda: self._go_to(PAGE_SHARE)),
+            ("matchday", "trophy", "Maç günü listesi", self._open_next_matchday),
+        )
+        for i, (key, icon, title, handler) in enumerate(tiles):
+            tile, tl = self._card(margins=(16, 14, 16, 14), spacing=0, clickable=True)
+            tile.clicked.connect(handler)
+            inner = QHBoxLayout()
+            inner.setSpacing(12)
+            box = QLabel()
+            box.setObjectName("iconBox")
+            box.setFixedSize(44, 44)
+            box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            pm = make_pixmap(icon, K_GREEN_HI, 22)
+            if pm is not None:
+                box.setPixmap(pm)
+            inner.addWidget(box)
+            col = QVBoxLayout()
+            col.setSpacing(1)
+            t = QLabel(title)
+            t.setObjectName("rowTitle")
+            sub = QLabel("")
+            sub.setObjectName("rowSub")
+            sub.setWordWrap(True)
+            col.addWidget(t)
+            col.addWidget(sub)
+            inner.addLayout(col, 1)
+            tl.addLayout(inner)
+            self.home_tile_subs[key] = sub
+            grid.addWidget(tile, i // 2, i % 2)
+        layout.addLayout(grid)
 
-        sub = QLabel("Referans ve medya klasörlerini seç, oyuncu bazında otomatik ayır.")
-        sub.setObjectName("pageSub")
-        sub.setWordWrap(True)
-        layout.addWidget(sub)
+        mid = QHBoxLayout()
+        mid.setSpacing(14)
+        self.next_card, self.next_layout = self._card(clickable=True)
+        self.next_card.clicked.connect(self._open_next_match)
+        mid.addWidget(self.next_card, 1)
+        mid.addWidget(self._build_birthday_card(), 1)
+        layout.addLayout(mid)
 
-        go_btn = QPushButton("Ayıklamaya git")
-        go_btn.setObjectName("startBtn")
-        go_btn.setFixedSize(220, 52)
-        go_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        go_btn.clicked.connect(lambda: self._go_to(PAGE_EXTRACT))
-        layout.addWidget(go_btn, 0, Qt.AlignmentFlag.AlignLeft)
-
-        layout.addWidget(self._build_birthday_card(), 1)
+        fixture_card, f_layout = self._card(spacing=8)
+        f_head = QHBoxLayout()
+        f_head.addWidget(self._section_label("Fikstür"))
+        f_head.addStretch(1)
+        all_fx = QPushButton("Tümü")
+        all_fx.setObjectName("linkBtn")
+        all_fx.setCursor(Qt.CursorShape.PointingHandCursor)
+        all_fx.clicked.connect(lambda: self._go_to(PAGE_MATCHES))
+        f_head.addWidget(all_fx)
+        f_layout.addLayout(f_head)
+        self.fixture_rows = QVBoxLayout()
+        self.fixture_rows.setSpacing(0)
+        f_layout.addLayout(self.fixture_rows)
+        layout.addWidget(fixture_card)
+        layout.addStretch(1)
         return column
+
+    def _open_next_matchday(self):
+        nm = get_next_fixture()
+        if nm is None:
+            self._go_to(PAGE_MATCHES)
+        else:
+            self._open_matchday(nm)
+
+    def _refresh_home_tiles(self):
+        h = datetime.now().hour
+        greet = "Günaydın" if 5 <= h < 12 else ("İyi günler" if h < 18 else ("İyi akşamlar" if h < 24 else "İyi geceler"))
+        self.home_greet.setText(greet)
+        subs = self.home_tile_subs
+        hist = load_history()
+        if hist:
+            last = hist[0]
+            try:
+                d = datetime.fromisoformat(last.get("ts", "")).strftime("%d.%m")
+            except Exception:
+                d = ""
+            subs["extract"].setText(f"Son işlem {d} · {last.get('basarili', 0)} kare ayrıldı".replace("  ", " "))
+        else:
+            subs["extract"].setText("Referans + medya klasörünü seç, oyuncuya göre ayır")
+        mixed = 0
+        if self.work_folder:
+            try:
+                mixed = sum(1 for r in read_report(os.path.join(self.work_folder, "Rapor.csv"))
+                            if r["Sonuç"].startswith("Karışık"))
+            except Exception:
+                mixed = 0
+            subs["review"].setText(f"{mixed} karışık kare bekliyor" if mixed else "Bekleyen karışık kare yok")
+            subs["social"].setText("Story / Gönderi / Kare + logo hazırla")
+        else:
+            subs["review"].setText("Önce bir çıktı klasörü seç")
+            subs["social"].setText("Story / Gönderi / Kare + logo hazırla")
+        nm = get_next_fixture()
+        if nm is None:
+            subs["matchday"].setText("Yaklaşan maç yok")
+        else:
+            days = (nm["date"] - date.today()).days
+            when = "bugün" if days == 0 else ("yarın" if days == 1 else f"{days} gün sonra")
+            subs["matchday"].setText(f"{nm['opponent']} · {when}")
 
     # ==================================================================
     # SAYFA 2 — YÜZ AYIKLAMA (kaynaklar, motor ayarları, ilerleme, günlük)
@@ -5311,36 +5392,6 @@ class MainWindow(QMainWindow):
         parent.addLayout(pair)
         return value_label
 
-    def _build_right_column(self) -> QWidget:
-        column = QWidget()
-        layout = QVBoxLayout(column)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(16)
-
-        # Sıradaki maç: tıklanınca maç detayı + yapay zekâ yorumu açılır
-        self.next_card, self.next_layout = self._card(clickable=True)
-        self.next_card.clicked.connect(self._open_next_match)
-        layout.addWidget(self.next_card)
-
-        fixture_card, f_layout = self._card(spacing=8)
-        f_head = QHBoxLayout()
-        f_head.addWidget(self._section_label("Fikstür"))
-        f_head.addStretch(1)
-        all_fx = QPushButton("Tümü")
-        all_fx.setObjectName("linkBtn")
-        all_fx.setCursor(Qt.CursorShape.PointingHandCursor)
-        all_fx.clicked.connect(lambda: self._go_to(PAGE_MATCHES))
-        f_head.addWidget(all_fx)
-        f_layout.addLayout(f_head)
-        self.fixture_rows = QVBoxLayout()
-        self.fixture_rows.setSpacing(0)
-        f_layout.addLayout(self.fixture_rows)
-        layout.addWidget(fixture_card, 1)
-
-        scroll = self._scroll(column)
-        scroll.setFixedWidth(340)
-        return scroll
-
     def _build_birthday_card(self) -> QWidget:
         bday_card, b_layout = self._card(spacing=8)
         b_head = QHBoxLayout()
@@ -5362,6 +5413,7 @@ class MainWindow(QMainWindow):
     # Ana sayfadaki kulüp kartları
     # ------------------------------------------------------------------
     def _refresh_club_cards(self):
+        self._refresh_home_tiles()
         self._refresh_next_match()
         self._refresh_fixture_rows()
         self._refresh_birthday_rows()
