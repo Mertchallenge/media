@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.3.5"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Ana sayfa: Bugünün programı ve Paylaşım takibi yan yana, daha kompakt."
+UPDATE_NOTES = "Ana sayfa: Paylaşım takibinden \"sırası gelenler\" kaldırıldı, iki kart eşit yükseklikte."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -5873,9 +5873,13 @@ class MainWindow(QMainWindow):
         prog_all.clicked.connect(lambda: self._go_to(PAGE_PROGRAM))
         p_head.addWidget(prog_all)
         p_layout.addLayout(p_head)
+        self.today_prog_sub = QLabel("")
+        self.today_prog_sub.setObjectName("dateSub")
+        p_layout.addWidget(self.today_prog_sub)
         self.today_prog_rows = QVBoxLayout()
         self.today_prog_rows.setSpacing(6)
         p_layout.addLayout(self.today_prog_rows)
+        p_layout.addStretch(1)
 
         track, t_layout = self._card(spacing=10, clickable=True)
         track.clicked.connect(self._share_history)
@@ -5909,8 +5913,8 @@ class MainWindow(QMainWindow):
         t_layout.addLayout(self.track_body)
         row2 = QHBoxLayout()
         row2.setSpacing(14)
-        row2.addWidget(prog_card, 0, Qt.AlignmentFlag.AlignTop)
-        row2.addWidget(track, 1, Qt.AlignmentFlag.AlignTop)
+        row2.addWidget(prog_card, 0)        # iki kart aynı yükseklikte (hizalı)
+        row2.addWidget(track, 1)
         layout.addLayout(row2)
 
         fixture_card, f_layout = self._card(spacing=8)
@@ -6301,27 +6305,6 @@ class MainWindow(QMainWindow):
         else:
             warn = make_chip("Son 7 günde herkes paylaşıldı", K_GREEN_HI, K_GREEN_BG)
         self.track_side.addWidget(warn, 0, Qt.AlignmentFlag.AlignLeft)
-        self.track_side.addSpacing(8)
-        cap2 = QLabel("Sırası gelenler")
-        cap2.setObjectName("rowTitle")
-        self.track_side.addWidget(cap2)
-        self.track_side.addSpacing(6)
-        for n, days in ov["waiting"]:
-            row = QFrame()
-            row.setObjectName("rowLine")
-            row.setFixedHeight(34)
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(8)
-            nm = ElidedLabel(n)
-            nm.setObjectName("bdName")
-            rl.addWidget(nm, 1)
-            if days is None:
-                chip = make_chip("hiç paylaşılmadı", K_AMBER, K_AMBER_BG)
-            else:
-                chip = make_chip(f"{days} gün önce", K_MUTED, "#1B2A22")
-            rl.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
-            self.track_side.addWidget(row)
         self.track_side.addStretch(1)
 
     def _refresh_club_cards(self):
@@ -6841,7 +6824,8 @@ class MainWindow(QMainWindow):
             if todays:
                 items, subtitle = sorted(todays, key=lambda i: i.get("time") or "99:99"), pr.get("subtitle", "")
                 break
-        self.today_prog_label.setText(turkish_upper(f"Bugünün programı · {subtitle}" if subtitle else "Bugünün programı"))
+        self.today_prog_sub.setText(subtitle)
+        self.today_prog_sub.setVisible(bool(subtitle))
         if not items:
             hint = QLabel("Bugün için program eklenmedi.")
             hint.setObjectName("emptyHint")
