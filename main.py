@@ -2676,7 +2676,7 @@ MATCHDAY_PHASES = [
 def load_medya_extra() -> dict:
     base = {
         "share_links": {}, "share_message": DEFAULT_SHARE_MESSAGE, "best_count": DEFAULT_BEST_COUNT,
-        "matchday": {}, "instagram_handle": "kocaelispor",
+        "matchday": {}, "instagram_handle": "kocaelispor", "x_handle": "Kocaelispor",
         "social": {"formats": ["Story", "Gonderi"], "mode": "Kırp", "logo": True,
                    "logo_pos": "Sağ alt", "logo_size": 12, "logo_kind": "KSmedya", "source": "Tüm oyuncu klasörleri"},
     }
@@ -3949,6 +3949,82 @@ class InstagramPanel(QWidget):
         page.scripts().insert(script)
         view.setUrl(QUrl(f"https://www.instagram.com/{self._handle_text()}/embed/"))
         self.host.addWidget(view)
+        self._view = view
+
+
+class TweetPanel(QWidget):
+    """Kocaelispor'un X (Twitter) hesabındaki son tweet — resmî gömme (embed) bileşeniyle, koyu tema."""
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.extra = load_medya_extra()
+        self._view = None
+        self._built = False
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        t = QLabel("Son tweet")
+        t.setObjectName("rowTitle")
+        head.addWidget(t)
+        head.addStretch(1)
+        head.addWidget(QLabel("@"))
+        self.handle = QLineEdit(str(self.extra.get("x_handle") or "Kocaelispor"))
+        self.handle.setFixedWidth(128)
+        self.handle.setMinimumHeight(28)
+        self.handle.returnPressed.connect(self.reload)
+        head.addWidget(self.handle)
+        rb = QPushButton("Yenile")
+        rb.setObjectName("linkBtn")
+        rb.setCursor(Qt.CursorShape.PointingHandCursor)
+        rb.clicked.connect(self.reload)
+        head.addWidget(rb)
+        v.addLayout(head)
+        self.host = QVBoxLayout()
+        self.host.setContentsMargins(0, 0, 0, 0)
+        v.addLayout(self.host, 1)
+
+    def _handle_text(self) -> str:
+        return self.handle.text().strip().lstrip("@").strip("/ ") or "Kocaelispor"
+
+    def _html(self) -> str:
+        h = self._handle_text()
+        bg = K_CARD
+        return ("<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                f"<style>html,body{{margin:0;padding:0;background:{bg};}}</style></head><body>"
+                "<a class='twitter-timeline' data-theme='dark' data-dnt='true' data-tweet-limit='2' "
+                "data-chrome='noheader nofooter noborders transparent' "
+                f"href='https://twitter.com/{h}?ref_src=twsrc%5Etfw'>@{h}</a>"
+                "<script async src='https://platform.twitter.com/widgets.js' charset='utf-8'></script>"
+                "</body></html>")
+
+    def reload(self):
+        self.extra["x_handle"] = self._handle_text()
+        save_medya_extra(self.extra, keys=("x_handle",))
+        if self._view is not None:
+            self._view.setHtml(self._html(), QUrl("https://twitter.com"))
+
+    def ensure(self):
+        if self._built:
+            return
+        self._built = True
+        if not HAS_WEBENGINE:
+            lab = QLabel("Tweet'i göstermek için PyQt6-WebEngine gerekli. Sağdaki Instagram panelindeki "
+                         "\"Şimdi kur\" düğmesiyle kurup uygulamayı yeniden başlat.")
+            lab.setObjectName("emptyHint")
+            lab.setWordWrap(True)
+            self.host.addWidget(lab)
+            self.host.addStretch(1)
+            return
+        view = QWebEngineView()
+        view.setMinimumHeight(250)
+        page = InstagramPage(view)
+        view.setPage(page)
+        page.setBackgroundColor(QColor(K_CARD))
+        view.setHtml(self._html(), QUrl("https://twitter.com"))
+        self.host.addWidget(view, 1)
         self._view = view
 
 
@@ -5581,6 +5657,7 @@ class MainWindow(QMainWindow):
         self.page_sub.setText(sub)
         if index == PAGE_HOME:
             self.ig_panel.ensure()
+            self.tweet_panel.ensure()
             self.news_panel.refresh_if_stale()
         elif index == PAGE_REVIEW:
             self.review_page.on_show()
@@ -5658,7 +5735,17 @@ class MainWindow(QMainWindow):
         t_head.addWidget(add_btn)
         t_layout.addLayout(t_head)
         self.track_body = QHBoxLayout()
-        self.track_body.setSpacing(24)
+        self.track_body.setSpacing(22)
+        self.track_faces = QVBoxLayout()
+        self.track_faces.setSpacing(8)
+        self.track_body.addLayout(self.track_faces, 1)
+        sep = QFrame()
+        sep.setObjectName("vLine")
+        sep.setFixedWidth(1)
+        sep.setStyleSheet(f"background: {K_LINE}; border: none;")
+        self.track_body.addWidget(sep)
+        self.tweet_panel = TweetPanel(self)
+        self.track_body.addWidget(self.tweet_panel, 1)
         t_layout.addLayout(self.track_body)
         layout.addWidget(track)
 
@@ -6000,20 +6087,17 @@ class MainWindow(QMainWindow):
             self._refresh_share_track()
 
     def _refresh_share_track(self):
-        clear_layout(self.track_body)
+        clear_layout(self.track_faces)
         log = load_share_log()
         if not log:
-            hint = QLabel("Henüz kayıt yok. Bir antrenman paylaşımını \"+ Paylaşım kaydet\" ile işaretleyince burada "
-                          "son paylaşılan oyuncular ve sırası gelenler görünür.")
+            hint = QLabel("Henüz kayıt yok. Bir antrenman paylaşımını \"+ Paylaşım kaydet\" ile işaretleyince "
+                          "son paylaşılan oyuncular burada görünür.")
             hint.setObjectName("emptyHint")
             hint.setWordWrap(True)
-            self.track_body.addWidget(hint)
+            self.track_faces.addWidget(hint)
+            self.track_faces.addStretch(1)
             return
-        ov = share_overview(log, self._share_universe(), date.today())
-        last = ov["last"]
-        # Sol: son paylaşılan set
-        left = QVBoxLayout()
-        left.setSpacing(8)
+        last = log[0]
         try:
             d = date.fromisoformat(last["date"])
             ds = f"{d.day} {TURKISH_MONTHS[d.month]}"
@@ -6021,49 +6105,23 @@ class MainWindow(QMainWindow):
             ds = last["date"]
         cap = QLabel(f"Son paylaşım · {ds} · {len(last['players'])} oyuncu")
         cap.setObjectName("rowTitle")
-        left.addWidget(cap)
+        self.track_faces.addWidget(cap)
         grid = QGridLayout()
         grid.setSpacing(10)
         for i, n in enumerate(last["players"]):
             cell = QVBoxLayout()
             cell.setSpacing(3)
-            cell.addWidget(make_avatar_label(n, 40, "avatar"), 0, Qt.AlignmentFlag.AlignHCenter)
+            cell.addWidget(make_avatar_label(n, 44, "avatar"), 0, Qt.AlignmentFlag.AlignHCenter)
             first = QLabel(n.split()[0] if n.split() else n)
             first.setObjectName("dateSub")
             first.setAlignment(Qt.AlignmentFlag.AlignCenter)
             cell.addWidget(first)
             holder = QWidget()
             holder.setLayout(cell)
-            holder.setFixedWidth(74)
+            holder.setFixedWidth(70)
             grid.addWidget(holder, i // 4, i % 4)
-        left.addLayout(grid)
-        left.addStretch(1)
-        self.track_body.addLayout(left, 3)
-        # Sağ: sırası gelenler
-        right = QVBoxLayout()
-        right.setSpacing(0)
-        cap2 = QLabel("Sırası gelenler")
-        cap2.setObjectName("rowTitle")
-        right.addWidget(cap2)
-        right.addSpacing(6)
-        for n, days in ov["waiting"]:
-            row = QFrame()
-            row.setObjectName("rowLine")
-            row.setFixedHeight(34)
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(8)
-            nm = ElidedLabel(n)
-            nm.setObjectName("bdName")
-            rl.addWidget(nm, 1)
-            if days is None:
-                chip = make_chip("hiç paylaşılmadı", K_AMBER, K_AMBER_BG)
-            else:
-                chip = make_chip(f"{days} gün önce", K_MUTED, "#1B2A22")
-            rl.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
-            right.addWidget(row)
-        right.addStretch(1)
-        self.track_body.addLayout(right, 2)
+        self.track_faces.addLayout(grid)
+        self.track_faces.addStretch(1)
 
     def _refresh_club_cards(self):
         self._refresh_share_track()
