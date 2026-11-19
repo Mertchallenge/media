@@ -2719,6 +2719,36 @@ def remove_last_share_entry():
         write_json(SHARE_LOG_PATH, log[1:])
 
 
+def remove_share_entry(iso_date: str):
+    write_json(SHARE_LOG_PATH, [e for e in load_share_log() if e["date"] != iso_date])
+
+
+def share_stats(log: list, universe: list, today, days=None) -> dict:
+    """Oyuncu başına paylaşım sayısı. days verilirse yalnız son N günün kayıtları sayılır.
+    Dönüş: rows [(ad, sayı, son_tarih|None)] (çok→az, sıfırlar en sonda), entries, distinct, never."""
+    entries = []
+    for e in log:
+        try:
+            d = date.fromisoformat(e["date"])
+        except ValueError:
+            continue
+        if days is None or (today - d).days <= days:
+            entries.append((d, e["players"]))
+    counts: dict = {}
+    last: dict = {}
+    for d, players in entries:
+        for p in players:
+            counts[p] = counts.get(p, 0) + 1
+            if p not in last or d > last[p]:
+                last[p] = d
+    for n in universe:
+        counts.setdefault(n, 0)
+    rows = [(n, c, last.get(n)) for n, c in counts.items()]
+    rows.sort(key=lambda r: (-r[1], -(r[2].toordinal() if r[2] else 0), turkish_lower(r[0])))
+    distinct = sum(1 for r in rows if r[1] > 0)
+    return {"rows": rows, "entries": len(entries), "distinct": distinct, "never": len(rows) - distinct}
+
+
 def share_overview(log: list, universe: list, today, limit: int = 5) -> dict:
     """Son paylaşılan set + en uzun süredir paylaşılmayan oyuncular ([(ad, gün|None)], None = hiç)."""
     last_seen: dict = {}
@@ -4259,6 +4289,209 @@ class SharePage(QWidget):
             QDesktopServices.openUrl(QUrl.fromLocalFile(out))
 
 
+class ShareStatRow(QWidget):
+    """Paylaşım istatistiği satırı: sıra · avatar · ad · çubuk · sayı · son paylaşım (tek parça çizilir)."""
+    RANK_W, AV, NAME_W, COUNT_W, LAST_W = 26, 30, 170, 36, 120
+
+    def __init__(self, rank: int, name: str, count: int, ratio: float, last_text: str, parent=None):
+        super().__init__(parent)
+        self.rank, self.name, self.count = rank, name, count
+        self.ratio, self.last_text = max(0.0, min(1.0, ratio)), last_text
+        self.pix = get_player_photo_pixmap(name, self.AV)
+        self.setFixedHeight(44)
+        self.setMinimumWidth(480)
+        self.setToolTip(name)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        p.setPen(QPen(QColor(K_LINE), 1))
+        p.drawLine(0, 0, w, 0)
+        f = p.font()
+        f.setPointSizeF(max(f.pointSizeF(), 10.5))
+        p.setFont(f)
+        x = 0
+        p.setPen(QColor(K_MUTED))
+        p.drawText(QRectF(x, 0, self.RANK_W, h), int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), str(self.rank))
+        x += self.RANK_W
+        ay = (h - self.AV) / 2.0
+        if self.pix is not None:
+            p.drawPixmap(QRectF(x, ay, self.AV, self.AV), self.pix, QRectF(self.pix.rect()))
+        else:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor("#1B2A22"))
+            p.drawEllipse(QRectF(x, ay, self.AV, self.AV))
+            p.setPen(QColor(K_GREEN_HI))
+            p.drawText(QRectF(x, ay, self.AV, self.AV), int(Qt.AlignmentFlag.AlignCenter), initials(self.name))
+        x += self.AV + 10
+        bold = p.font()
+        bold.setBold(True)
+        p.setFont(bold)
+        p.setPen(QColor(K_TEXT))
+        p.drawText(QRectF(x, 0, self.NAME_W, h), int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                   p.fontMetrics().elidedText(self.name, Qt.TextElideMode.ElideRight, self.NAME_W))
+        x += self.NAME_W + 12
+        normal = p.font()
+        normal.setBold(False)
+        p.setFont(normal)
+        last_x = w - self.LAST_W
+        cnt_x = last_x - self.COUNT_W - 8
+        bx1 = cnt_x - 12
+        if bx1 > x:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(K_LINE))
+            p.drawRoundedRect(QRectF(x, (h - 10) / 2.0, bx1 - x, 10), 5, 5)
+            if self.ratio > 0:
+                p.setBrush(QColor(K_GREEN))
+                p.drawRoundedRect(QRectF(x, (h - 10) / 2.0, max(10.0, (bx1 - x) * self.ratio), 10), 5, 5)
+        p.setPen(QColor(K_GREEN_HI if self.count else K_AMBER))
+        p.drawText(QRectF(cnt_x, 0, self.COUNT_W, h), int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight), str(self.count))
+        p.setPen(QColor(K_MUTED))
+        p.drawText(QRectF(last_x + 8, 0, self.LAST_W - 8, h), int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight), self.last_text)
+        p.end()
+
+
+class ShareHistoryDialog(QDialog):
+    """Paylaşım geçmişi (tarih tarih) + en çok / en az paylaşılan oyuncu istatistiği."""
+    PERIODS = (("Tüm zamanlar", None), ("Son 30 gün", 30), ("Son 90 gün", 90))
+
+    def __init__(self, universe: list, parent=None):
+        super().__init__(parent)
+        self.universe = universe
+        self.changed = False
+        self.setWindowTitle("Paylaşım geçmişi ve istatistik")
+        self.resize(1040, 720)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 20, 24, 18)
+        lay.setSpacing(14)
+        head = QHBoxLayout()
+        title = QLabel("Paylaşım geçmişi")
+        title.setObjectName("pageTitle")
+        head.addWidget(title)
+        head.addStretch(1)
+        self.period = QComboBox()
+        for label, _ in self.PERIODS:
+            self.period.addItem(label)
+        self.period.setMinimumHeight(34)
+        self.period.currentIndexChanged.connect(self.refresh)
+        head.addWidget(QLabel("İstatistik dönemi"))
+        head.addWidget(self.period)
+        lay.addLayout(head)
+        self.chips = QHBoxLayout()
+        self.chips.setSpacing(10)
+        lay.addLayout(self.chips)
+        body = QHBoxLayout()
+        body.setSpacing(18)
+        left_card, ll = self._mk_card("En çok paylaşılanlar")
+        self.stat_inner = QVBoxLayout()
+        self.stat_inner.setContentsMargins(0, 0, 0, 0)
+        self.stat_inner.setSpacing(0)
+        sw = QWidget()
+        sw.setLayout(self.stat_inner)
+        ll.addWidget(self._scroll(sw), 1)
+        body.addWidget(left_card, 3)
+        right_card, rl = self._mk_card("Geçmiş paylaşımlar")
+        self.hist_inner = QVBoxLayout()
+        self.hist_inner.setContentsMargins(0, 0, 0, 0)
+        self.hist_inner.setSpacing(10)
+        hw = QWidget()
+        hw.setLayout(self.hist_inner)
+        rl.addWidget(self._scroll(hw), 1)
+        body.addWidget(right_card, 2)
+        lay.addLayout(body, 1)
+        close = QPushButton("Kapat")
+        close.setObjectName("ghostBtn")
+        close.setFixedSize(120, 40)
+        close.clicked.connect(self.accept)
+        lay.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
+        self.refresh()
+
+    @staticmethod
+    def _scroll(widget: QWidget) -> QScrollArea:
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.Shape.NoFrame)
+        sc.setStyleSheet("QScrollArea { background: transparent; border: none; } QScrollArea > QWidget > QWidget { background: transparent; }")
+        sc.setWidget(widget)
+        return sc
+
+    def _mk_card(self, title: str):
+        card = QFrame()
+        card.setObjectName("card")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(18, 16, 18, 14)
+        v.setSpacing(8)
+        lab = QLabel(turkish_upper(title))
+        lab.setObjectName("sectionLabel")
+        v.addWidget(lab)
+        return card, v
+
+    def refresh(self):
+        log = load_share_log()
+        days = self.PERIODS[self.period.currentIndex()][1]
+        st = share_stats(log, self.universe, date.today(), days)
+        clear_layout(self.chips)
+        self.chips.addWidget(make_chip(f"{st['entries']} paylaşım", K_GREEN_HI, K_GREEN_BG))
+        self.chips.addWidget(make_chip(f"{st['distinct']} oyuncu paylaşıldı", K_SOFT, "#1B2A22"))
+        self.chips.addWidget(make_chip(f"{st['never']} oyuncu hiç paylaşılmadı",
+                                       K_AMBER if st["never"] else K_GREEN_HI, K_AMBER_BG if st["never"] else K_GREEN_BG))
+        self.chips.addStretch(1)
+        clear_layout(self.stat_inner)
+        top = max((r[1] for r in st["rows"]), default=0) or 1
+        if not st["rows"]:
+            self.stat_inner.addWidget(QLabel("Henüz paylaşım kaydı yok."))
+        for i, (n, c, last) in enumerate(st["rows"], 1):
+            last_txt = f"son: {last.day} {TURKISH_MONTHS[last.month][:3]}" if last else "hiç paylaşılmadı"
+            self.stat_inner.addWidget(ShareStatRow(i, n, c, c / top, last_txt))
+        self.stat_inner.addStretch(1)
+        clear_layout(self.hist_inner)
+        if not log:
+            hint = QLabel("Kayıt yok. Ana sayfadaki \"+ Paylaşım kaydet\" ile ekleyebilirsin.")
+            hint.setObjectName("emptyHint")
+            hint.setWordWrap(True)
+            self.hist_inner.addWidget(hint)
+        for e in log:
+            self.hist_inner.addWidget(self._entry_widget(e))
+        self.hist_inner.addStretch(1)
+
+    def _entry_widget(self, e: dict) -> QWidget:
+        box = QFrame()
+        box.setObjectName("rowLine")
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 8, 0, 8)
+        v.setSpacing(6)
+        top = QHBoxLayout()
+        try:
+            d = date.fromisoformat(e["date"])
+            ds = f"{d.day} {TURKISH_MONTHS[d.month]} {d.year} · {DAYS_TR[d.weekday()]}"
+        except ValueError:
+            ds = e["date"]
+        t = QLabel(ds)
+        t.setObjectName("dateMain")
+        top.addWidget(t)
+        top.addWidget(make_chip(f"{len(e['players'])} oyuncu", K_MUTED, "#1B2A22"))
+        top.addStretch(1)
+        rm = QPushButton("Sil")
+        rm.setObjectName("linkBtn")
+        rm.setCursor(Qt.CursorShape.PointingHandCursor)
+        rm.clicked.connect(lambda checked=False, iso=e["date"]: self._remove(iso))
+        top.addWidget(rm)
+        v.addLayout(top)
+        names = QLabel(" · ".join(e["players"]))
+        names.setObjectName("rowSub")
+        names.setWordWrap(True)
+        v.addWidget(names)
+        return box
+
+    def _remove(self, iso: str):
+        ans = QMessageBox.question(self, "Kaydı sil", f"{iso} tarihli paylaşım kaydı silinsin mi?")
+        if ans == QMessageBox.StandardButton.Yes:
+            remove_share_entry(iso)
+            self.changed = True
+            self.refresh()
+
+
 class ShareLogDialog(QDialog):
     """Sosyal medyada paylaşılan oyuncuları işaretleyip günlüğe kaydeder."""
 
@@ -5197,10 +5430,16 @@ class MainWindow(QMainWindow):
         mid.addWidget(self._build_birthday_card(), 1)
         layout.addLayout(mid)
 
-        track, t_layout = self._card(spacing=10)
+        track, t_layout = self._card(spacing=10, clickable=True)
+        track.clicked.connect(self._share_history)
         t_head = QHBoxLayout()
         t_head.addWidget(self._section_label("Paylaşım takibi"))
         t_head.addStretch(1)
+        hist_btn = QPushButton("Geçmiş ve istatistik ›")
+        hist_btn.setObjectName("linkBtn")
+        hist_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        hist_btn.clicked.connect(self._share_history)
+        t_head.addWidget(hist_btn)
         undo_btn = QPushButton("Son kaydı sil")
         undo_btn.setObjectName("linkBtn")
         undo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -5537,6 +5776,11 @@ class MainWindow(QMainWindow):
             if players:
                 add_share_entry(day, players)
             self._refresh_share_track()
+
+    def _share_history(self):
+        dlg = ShareHistoryDialog(self._share_universe(), self)
+        dlg.exec()
+        self._refresh_share_track()
 
     def _share_undo(self):
         log = load_share_log()
