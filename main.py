@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.5.0"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Yeni macOS widget verileri: Bugünün/Haftalık program, Sıradaki maç, Doğum günleri."
+UPDATE_NOTES = "iPhone widget'ları: Scriptable ile Bugünün/Haftalık program, Paylaşım takibi, Sıradaki maç, Doğum günleri (iCloud ile otomatik eşitlenir)."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -6433,6 +6433,7 @@ class MainWindow(QMainWindow):
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, ensure_ascii=False)
             os.replace(tmp, os.path.join(folder, "share.json"))
+            self._ios_sync()
         except Exception:  # noqa: BLE001
             pass
 
@@ -6536,8 +6537,17 @@ class MainWindow(QMainWindow):
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, ensure_ascii=False)
             os.replace(tmp, os.path.join(folder, "extra.json"))
+            self._ios_sync()
         except Exception:  # noqa: BLE001
             pass
+
+    def _ios_sync(self):
+        """Widget verisini (ve iPhone betiğini) Scriptable'ın iCloud klasörüne kopyalar; Scriptable yoksa sessizce geçer."""
+        try:
+            folder = os.path.join(str(ks_data.user_data_dir()), "widget")
+            self._ios_state = ks_data.ios_sync(folder)
+        except Exception as exc:  # noqa: BLE001
+            self._ios_state = ("error", str(exc))
 
     def _refresh_club_cards(self):
         self._refresh_share_track()

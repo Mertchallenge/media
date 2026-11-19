@@ -99,3 +99,19 @@ Masaüstüne eklenen gerçek widget'lar (WidgetKit): **Paylaşım takibi**, **Bu
 Sonra masaüstüne sağ tık → *Widget'ları Düzenle* → **MediaStaffKS** → istediğin widget.
 Widget'lar kendi başlarına tazelenir (program satırı tam saatinde, diğerleri 15–60 dakikada bir);
 yeni veri için MediaStaffKS'ı açman yeterli.
+
+
+## iPhone widget'ları (Scriptable)
+
+Aynı beş widget iPhone'da da çalışır. Xcode / geliştirici hesabı gerekmez; ücretsiz **Scriptable**
+uygulaması ve iCloud Drive kullanılır.
+
+1. iPhone'a App Store'dan **Scriptable**'ı kur ve bir kez aç (iCloud açık olsun).
+2. Mac'te MediaStaffKS'ı aç. Uygulama, `MediaStaffKS.js` betiğini ve verileri
+   `iCloud Drive → Scriptable` klasörüne kendiliğinden yazar (`MediaStaffKS-data/share.json`, `extra.json`).
+   Betiğin kaynağı `ios/MediaStaffKS.js`; `ks_data.py` içine gömülüdür, güncelleme ile birlikte gelir.
+3. iPhone ana ekranına **Scriptable** widget'ı ekle → widget'a dokun (Widget'ı Düzenle):
+   *Script* = **MediaStaffKS**, *Parameter* = `program` · `week` · `share` · `match` · `birthdays`.
+
+Veri, Mac'teki uygulama her açılıp yenilendiğinde güncellenir; iPhone widget'ı iOS'un belirlediği
+aralıklarla (genelde 15+ dk) tazelenir.
