@@ -250,8 +250,13 @@ def turkish_title(text: str) -> str:
         rest = w[1:]
         tr_upper_map = {"i": "İ", "ı": "I"}
         first_upper = tr_upper_map.get(first, first.upper())
-        return first_upper + rest.lower()
+        return first_upper + turkish_lower(rest)
     return " ".join(cap_word(w) for w in text.split(" ") if w)
+
+
+def turkish_lower(text: str) -> str:
+    """Türkçe karakter duyarlı .lower() (İ -> i; birleşik nokta U+0307 oluşmaz. I -> i kalır: yabancı isimler için)."""
+    return text.replace("İ", "i").lower()
 
 
 def turkish_upper(text: str) -> str:
