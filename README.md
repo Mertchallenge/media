@@ -17,9 +17,9 @@ Kocaelispor Medya Departmanı masaüstü uygulaması (PyQt6).
 
 ## Medya bölümü — günlük akış
 
-1. **Ayıklama:** referans + medya klasörünü seç, başlat. Bitince oyuncu klasörlerinin yanında `SECILENLER` (oyuncu başına en iyi 5 kare) ve `Rapor.csv` oluşur.
+1. **Ayıklama:** referans + medya klasörünü seç, başlat. Bitince oyuncu klasörlerinin yanında `Rapor.csv` oluşur.
 2. **İnceleme:** Eşleşmeyen (KARISIK) ve düşük güvenli fotoğrafları tek tek onayla / düzelt. `Enter` öneriyi onaylar, `1/2/3` aday seçer, `→` atlar, `X` hiçbiri, `Z` geri alır. Onayladığın yüz referansa eklenir (sonraki ayıklamalar daha doğru olur).
-3. **Sosyal:** *Sosyal medya* sekmesi seçilen karelerden Story (1080×1920), Gönderi (1080×1350), Kare (1080×1080) üretir ve KSmedya logosunu ekler (`SOSYAL` klasörü); oyuncu başına en iyi kareleri de buradan yenileyebilirsin. *İçerik dengesi* sekmesi kimin az / hiç çıkmadığını, hangi oyuncunun tek referanslı olduğunu gösterir.
+3. **Sosyal:** *Sosyal medya* sekmesi oyuncu klasörlerindeki (ya da seçtiğin başka bir klasördeki) fotoğraflardan Story (1080×1920), Gönderi (1080×1350), Kare (1080×1080) üretir ve KSmedya logosunu ekler (`SOSYAL` klasörü). *İçerik dengesi* sekmesi kimin az / hiç çıkmadığını, hangi oyuncunun tek referanslı olduğunu gösterir.
 4. **Maçlar → Maç günü listesi:** Her maç için işaretlenebilir kontrol listesi.
 
 Ayarlar `~/.kocaelispor_foto_ayiklama/medya_ayarlar.json` dosyasında tutulur (sosyal medya ayarları, maç günü liste işaretleri).

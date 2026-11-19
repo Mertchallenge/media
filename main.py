@@ -1021,18 +1021,6 @@ class ExtractionWorker(QThread):
                 except Exception as e:
                     self.log_signal.emit(f"CSV raporu kaydedilemedi: {e}", "warn")
 
-                # Oyuncu başına en iyi fotoğraflar (SECILENLER klasörü)
-                try:
-                    n_best = int(load_medya_extra().get("best_count", DEFAULT_BEST_COUNT))
-                    made = build_selections(output_root, n_best)
-                    stats["secilen"] = made
-                    if made:
-                        self.log_signal.emit(
-                            f"En iyi fotoğraflar hazır: {made} kare → {SELECTION_FOLDER_NAME} klasörü "
-                            f"(oyuncu başına en fazla {n_best}).", "success")
-                except Exception as e:
-                    self.log_signal.emit(f"En iyi fotoğraf seçimi yapılamadı: {e}", "warn")
-
         except Exception as e:
             tb = traceback.format_exc()
             self.log_signal.emit(f"Beklenmeyen kritik hata: {e}\n{tb}", "error")
@@ -2171,6 +2159,8 @@ QPlainTextEdit {{
 }}
 QPlainTextEdit:focus {{ border: 1px solid {K_GREEN}; }}
 QCheckBox {{ color: {K_SOFT}; spacing: 8px; }}
+QCheckBox::indicator {{ width: 18px; height: 18px; border-radius: 5px; border: 1px solid {K_LINE2}; background-color: {K_BG}; }}
+QCheckBox::indicator:checked {{ background-color: {K_GREEN}; border: 1px solid {K_GREEN_HI}; }}
 
 QTextEdit {{
     background-color: {K_CARD};
@@ -2547,6 +2537,7 @@ SOCIAL_FORMATS = [
     ("Kare", "Kare 1080×1080", 1080, 1080),
 ]
 LOGO_POSITIONS = ["Sağ alt", "Sol alt", "Sağ üst", "Sol üst"]
+SOCIAL_SOURCES = ["Tüm oyuncu klasörleri", "Başka klasör"]
 KSMEDYA_LOGO_FILENAMES = ("ksmedya_logo.png",)
 KSMEDYA_LOGO_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAIYAAAByCAYAAACWeqmeAAAVG0lEQVR42u1dCZgUxRWu2V3uRVl1l0sEBVEBxSvirXiGqIi3JmjE"
@@ -2656,7 +2647,7 @@ def load_medya_extra() -> dict:
         "share_links": {}, "share_message": DEFAULT_SHARE_MESSAGE, "best_count": DEFAULT_BEST_COUNT,
         "matchday": {}, "instagram_handle": "kocaelispor",
         "social": {"formats": ["Story", "Gonderi"], "mode": "Kırp", "logo": True,
-                   "logo_pos": "Sağ alt", "logo_size": 12, "logo_kind": "KSmedya", "source": "Seçilenler"},
+                   "logo_pos": "Sağ alt", "logo_size": 12, "logo_kind": "KSmedya", "source": "Tüm oyuncu klasörleri"},
     }
     data = read_json(MEDYA_EXTRA_PATH, {})
     if isinstance(data, dict):
@@ -2732,84 +2723,6 @@ def parse_candidates(text: str) -> list:
             except ValueError:
                 pass
     return out
-
-
-def photo_quality_fallback(path: str) -> float:
-    """Yüz bilgisi olmayan (eski rapor) fotoğraflar için yedek kalite puanı: netlik + çözünürlük."""
-    img = imread_unicode(path)
-    if img is None:
-        return 0.0
-    h, w = img.shape[:2]
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    if max(h, w) > 800:
-        k = 800.0 / max(h, w)
-        gray = cv2.resize(gray, (max(1, int(w * k)), max(1, int(h * k))), interpolation=cv2.INTER_AREA)
-    sharp = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    s = min(1.0, math.log1p(sharp) / math.log1p(400.0))
-    r = min(1.0, (h * w) / 12e6)
-    return round(100.0 * (0.7 * s + 0.3 * r) * 0.8, 1)
-
-
-def pick_best(cands: list, n: int, burst_seconds: float = 3.0) -> list:
-    """(kalite, yol) listesinden en iyi n kare. Aynı saniyelerde çekilmiş seri çekimlerden
-    önce birer tane seçilir (5 neredeyse aynı kare yerine farklı anlar); yetmezse kalite sırasıyla doldurulur."""
-    ordered = sorted(cands, key=lambda c: c[0], reverse=True)
-    chosen, rest = [], []
-    for q, path in ordered:
-        try:
-            t = os.path.getmtime(path)
-        except OSError:
-            t = 0.0
-        if t > 0 and any(abs(t - ct) <= burst_seconds for _, _, ct in chosen):
-            rest.append((q, path))
-            continue
-        chosen.append((q, path, t))
-        if len(chosen) >= n:
-            break
-    out = [(q, p) for q, p, _ in chosen]
-    if len(out) < n:
-        out += rest[:n - len(out)]
-    return out
-
-
-def build_selections(output_root: str, n: int, replace: bool = True) -> int:
-    """Rapor.csv'ye bakarak her oyuncunun en iyi n fotoğrafını SECILENLER/<Oyuncu>/ altına kopyalar.
-    Döner: kopyalanan toplam fotoğraf sayısı."""
-    rows = read_report(os.path.join(output_root, "Rapor.csv"))
-    if not rows:
-        return 0
-    groups: dict = {}
-    for r in rows:
-        if not (r["Sonuç"].startswith("Eşleşti") or r["Sonuç"].startswith("Kaleci")):
-            continue
-        player = r["Oyuncu"].strip()
-        if not player or player == "-":
-            continue
-        path = report_row_path(output_root, r)
-        if not path:
-            continue
-        try:
-            q = float(r["Kalite"]) if r["Kalite"] else None
-        except ValueError:
-            q = None
-        groups.setdefault(player, []).append([q, path])
-    sel_root = os.path.join(output_root, SELECTION_FOLDER_NAME)
-    if replace and os.path.isdir(sel_root):
-        shutil.rmtree(sel_root, ignore_errors=True)
-    total = 0
-    for player, items in groups.items():
-        for it in items:
-            if it[0] is None:
-                it[0] = photo_quality_fallback(it[1])
-        best = pick_best([(q, p) for q, p in items], n)
-        if not best:
-            continue
-        dest = os.path.join(sel_root, player)
-        os.makedirs(dest, exist_ok=True)
-        for rank, (q, p) in enumerate(best, 1):
-            shutil.copy2(p, unique_destination_path(dest, f"{rank:02d}_{os.path.basename(p)}"))
-            total += 1
-    return total
 
 
 def load_reference_counts(ref_folder: str) -> dict:
@@ -2977,21 +2890,11 @@ def render_social(img, tw: int, th: int, mode: str, focus: tuple, logo, logo_pos
 
 
 def list_social_jobs(root: str, source: str, extra_folder: str = "") -> list:
-    """[(oyuncu, dosya_yolu)] — kaynak: 'Seçilenler' | 'Tüm oyuncu klasörleri' | 'Başka klasör'."""
+    """[(oyuncu, dosya_yolu)] — kaynak: 'Tüm oyuncu klasörleri' | 'Başka klasör'."""
     jobs = []
     if source == "Başka klasör":
         for p in sorted(list_image_files(extra_folder)) if extra_folder else []:
             jobs.append(("Genel", p))
-        return jobs
-    if source == "Seçilenler":
-        base = os.path.join(root, SELECTION_FOLDER_NAME)
-        if os.path.isdir(base):
-            for player in sorted(os.listdir(base)):
-                pdir = os.path.join(base, player)
-                if os.path.isdir(pdir):
-                    for fn in sorted(os.listdir(pdir)):
-                        if os.path.splitext(fn)[1].lower() in IMAGE_EXTENSIONS:
-                            jobs.append((player, os.path.join(pdir, fn)))
         return jobs
     for e in build_share_entries(root):
         if e["keeper"]:
@@ -3815,68 +3718,6 @@ class SharePage(QWidget):
         lab.setWordWrap(True)
         return lab
 
-    # ---------------------------------------------------------------- Seçilen (en iyi) fotoğraflar
-    def _build_selection_card(self) -> QWidget:
-        card, c = self.win._card(margins=(20, 16, 20, 16), spacing=10)
-        c.addWidget(self.win._section_label("En iyi fotoğraflar"))
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        row.addWidget(QLabel("Oyuncu başına en iyi"))
-        self.best_spin = QSpinBox()
-        self.best_spin.setRange(1, 30)
-        self.best_spin.setValue(int(self.extra.get("best_count", DEFAULT_BEST_COUNT)))
-        row.addWidget(self.best_spin)
-        row.addWidget(QLabel("kare"))
-        self.make_sel_btn = QPushButton("Seçilenleri oluştur / yenile")
-        self.make_sel_btn.setObjectName("smallBtn")
-        self.make_sel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.make_sel_btn.setToolTip("Her oyuncunun en net / en büyük / en iyi kadrajlı karelerini SECILENLER klasörüne kopyalar.")
-        self.make_sel_btn.clicked.connect(self._make_selections)
-        row.addWidget(self.make_sel_btn)
-        self.open_sel_btn = QPushButton("Klasörü aç")
-        self.open_sel_btn.setObjectName("outlineSmall")
-        self.open_sel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.open_sel_btn.clicked.connect(self._open_selection)
-        row.addWidget(self.open_sel_btn)
-        row.addStretch(1)
-        c.addLayout(row)
-        self.sel_status = QLabel("Ayıklama bitince her oyuncunun en iyi kareleri otomatik seçilir.")
-        self.sel_status.setObjectName("dateSub")
-        self.sel_status.setWordWrap(True)
-        c.addWidget(self.sel_status)
-        return card
-
-    def _open_selection(self):
-        path = os.path.join(self.root, SELECTION_FOLDER_NAME) if self.root else ""
-        if path and os.path.isdir(path):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        else:
-            self.sel_status.setText("Bu klasörde henüz SECILENLER yok.")
-
-    def _make_selections(self):
-        if not self.root:
-            self.sel_status.setText("Önce çıktı klasörü seç.")
-            return
-        if not os.path.isfile(os.path.join(self.root, "Rapor.csv")):
-            QMessageBox.information(self, "Rapor yok", "Bu klasörde Rapor.csv yok; seçim yapılamaz.")
-            return
-        n = self.best_spin.value()
-        self.extra["best_count"] = n
-        save_medya_extra(self.extra)
-        if os.path.isdir(os.path.join(self.root, SELECTION_FOLDER_NAME)):
-            ans = QMessageBox.question(self, "Seçilenleri yenile",
-                                       f"{SELECTION_FOLDER_NAME} klasörü yeniden oluşturulacak; içindekiler silinip "
-                                       f"yeni seçim kopyalanır. Devam edilsin mi?")
-            if ans != QMessageBox.StandardButton.Yes:
-                return
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            made = build_selections(self.root, n)
-        finally:
-            QApplication.restoreOverrideCursor()
-        self.sel_status.setText(f"{made} fotoğraf seçildi (oyuncu başına en fazla {n}).")
-        self._refresh_social_summary()
-
     # ---------------------------------------------------------------- Kocaelispor Instagram (mini görünüm)
     def _build_instagram_tab(self) -> QWidget:
         page = QWidget()
@@ -4054,29 +3895,22 @@ class SharePage(QWidget):
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(16)
-        lay.addWidget(self._build_selection_card())
         card, c = self.win._card(margins=(20, 18, 20, 16), spacing=14)
 
         c.addWidget(self.win._section_label("Kaynak fotoğraflar"))
         src_row = QHBoxLayout()
-        src_row.setSpacing(8)
-        self.src_group = QButtonGroup(self)
-        self.src_group.setExclusive(True)
-        self.src_buttons = {}
-        for name in ("Seçilenler", "Tüm oyuncu klasörleri", "Başka klasör"):
-            b = QPushButton(name)
-            b.setObjectName("segBtn")
-            b.setCheckable(True)
-            b.setChecked(name == sx.get("source", "Seçilenler"))
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.clicked.connect(lambda checked=False, n=name: self._social_source(n))
-            self.src_group.addButton(b)
-            self.src_buttons[name] = b
-            src_row.addWidget(b)
+        src_row.setSpacing(10)
+        self.src_combo = QComboBox()
+        self.src_combo.addItems(SOCIAL_SOURCES)
+        saved_src = sx.get("source", SOCIAL_SOURCES[0])
+        self.src_combo.setCurrentText(saved_src if saved_src in SOCIAL_SOURCES else SOCIAL_SOURCES[0])
+        self.src_combo.setMinimumWidth(240)
+        self.src_combo.currentIndexChanged.connect(self._social_source)
+        src_row.addWidget(self.src_combo)
         self.other_btn = QPushButton("Klasör seç…")
         self.other_btn.setObjectName("outlineSmall")
         self.other_btn.clicked.connect(self._pick_other_folder)
-        self.other_btn.setVisible(sx.get("source") == "Başka klasör")
+        self.other_btn.setVisible(self.src_combo.currentText() == "Başka klasör")
         src_row.addWidget(self.other_btn)
         src_row.addStretch(1)
         c.addLayout(src_row)
@@ -4096,20 +3930,12 @@ class SharePage(QWidget):
 
         c.addWidget(self.win._section_label("Kadraj"))
         mode_row = QHBoxLayout()
-        mode_row.setSpacing(8)
-        self.mode_group = QButtonGroup(self)
-        self.mode_group.setExclusive(True)
-        self.mode_buttons = {}
-        for name in ("Kırp", "Sığdır"):
-            b = QPushButton(name)
-            b.setObjectName("segBtn")
-            b.setCheckable(True)
-            b.setChecked(name == sx.get("mode", "Kırp"))
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.clicked.connect(self._social_changed)
-            self.mode_group.addButton(b)
-            self.mode_buttons[name] = b
-            mode_row.addWidget(b)
+        mode_row.setSpacing(10)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Kırp", "Sığdır"])
+        self.mode_combo.setCurrentText(sx.get("mode", "Kırp") if sx.get("mode") in ("Kırp", "Sığdır") else "Kırp")
+        self.mode_combo.currentIndexChanged.connect(self._social_changed)
+        mode_row.addWidget(self.mode_combo)
         mode_hint = QLabel("Kırp: yüzü kadrajda tutarak doldurur · Sığdır: fotoğrafın tamamı, arkası bulanık zemin")
         mode_hint.setObjectName("dateSub")
         mode_row.addWidget(mode_hint)
@@ -4180,8 +4006,8 @@ class SharePage(QWidget):
         lay.addStretch(1)
         return page
 
-    def _social_source(self, name: str):
-        self.other_btn.setVisible(name == "Başka klasör")
+    def _social_source(self, *args):
+        self.other_btn.setVisible(self.src_combo.currentText() == "Başka klasör")
         self._social_changed()
 
     def _pick_other_folder(self):
@@ -4192,8 +4018,8 @@ class SharePage(QWidget):
             self._social_changed()
 
     def _social_settings(self) -> dict:
-        source = next((n for n, b in self.src_buttons.items() if b.isChecked()), "Seçilenler")
-        mode = next((n for n, b in self.mode_buttons.items() if b.isChecked()), "Kırp")
+        source = self.src_combo.currentText() or SOCIAL_SOURCES[0]
+        mode = self.mode_combo.currentText() or "Kırp"
         return {"formats": [k for k, cb in self.fmt_checks.items() if cb.isChecked()], "mode": mode,
                 "logo": self.logo_check.isChecked(), "logo_pos": self.logo_pos.currentText(),
                 "logo_size": self.logo_size.value(), "logo_kind": self.logo_kind.currentText(), "source": source}
@@ -4214,10 +4040,7 @@ class SharePage(QWidget):
             return
         jobs = self._social_jobs()
         nf = len(s["formats"])
-        if s["source"] == "Seçilenler" and not jobs:
-            self.social_summary.setText("SECILENLER klasörü boş. Yukarıdan 'Seçilenleri oluştur'a bas ya da kaynağı değiştir.")
-        else:
-            self.social_summary.setText(f"{len(jobs)} fotoğraf × {nf} boyut = {len(jobs) * nf} görsel")
+        self.social_summary.setText(f"{len(jobs)} fotoğraf × {nf} boyut = {len(jobs) * nf} görsel")
 
     def _social_run(self):
         if self.social_worker is not None and self.social_worker.isRunning():
@@ -6539,8 +6362,6 @@ class MainWindow(QMainWindow):
             self.set_work_folder(output_folder)
         title = "İşlem Tamamlandı" if not self._stop_requested else "İşlem Durduruldu"
         msg = f"Çıktı klasörü:\n{output_folder or '-'}"
-        if stats.get("secilen"):
-            msg += f"\n\nEn iyi fotoğraflar: {stats['secilen']} kare ({SELECTION_FOLDER_NAME} klasörü)"
         box = QMessageBox(self)
         box.setWindowTitle(title)
         box.setIcon(QMessageBox.Icon.Information)
@@ -6673,6 +6494,8 @@ QPlainTextEdit:focus {{ border: 1px solid {K_GREEN}; }}
 QCalendarWidget QWidget {{ background-color: {K_CARD}; color: {K_TEXT}; }}
 QCalendarWidget QAbstractItemView {{ selection-background-color: {K_GREEN}; selection-color: #04140D; }}
 QCheckBox {{ color: {K_SOFT}; spacing: 8px; }}
+QCheckBox::indicator {{ width: 18px; height: 18px; border-radius: 5px; border: 1px solid {K_LINE2}; background-color: {K_BG}; }}
+QCheckBox::indicator:checked {{ background-color: {K_GREEN}; border: 1px solid {K_GREEN_HI}; }}
 QLabel#dlgTitle {{ font-family: {FONT_DISPLAY}; font-size: 20px; font-weight: 700; }}
 QLabel#dlgHint {{ color: {K_MUTED}; font-size: 12px; }}
 QLabel#formLabel {{ color: {K_MUTED}; font-size: 12px; font-weight: 600; }}
