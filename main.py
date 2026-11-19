@@ -3952,18 +3952,67 @@ class InstagramPanel(QWidget):
         self._view = view
 
 
+def parse_tweets(html: str, handle: str, limit: int = 2) -> list:
+    """syndication.twitter.com profil sayfasındaki __NEXT_DATA__ JSON'undan [{text, ts, link}] (yeni→eski)."""
+    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+    if not m:
+        return []
+    data = json.loads(m.group(1))
+    entries = (((data.get("props") or {}).get("pageProps") or {}).get("timeline") or {}).get("entries") or []
+    out = []
+    for e in entries:
+        t = (e.get("content") or {}).get("tweet")
+        if not isinstance(t, dict):
+            continue
+        text = t.get("full_text") or t.get("text") or ""
+        text = re.sub(r"https://t\.co/\S+", "", text)
+        text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").strip()
+        if not text:
+            continue
+        try:
+            ts = datetime.strptime(t.get("created_at", ""), "%a %b %d %H:%M:%S %z %Y").astimezone().replace(tzinfo=None)
+        except ValueError:
+            continue
+        link = f"https://x.com/{handle}/status/{t.get('id_str') or t.get('conversation_id_str') or ''}"
+        out.append({"text": text, "ts": ts, "link": link})
+    out.sort(key=lambda x: x["ts"], reverse=True)
+    return out[:limit]
+
+
+class TweetWorker(QThread):
+    done_signal = pyqtSignal(list, str)
+
+    def __init__(self, handle: str, parent=None):
+        super().__init__(parent)
+        self.handle = handle
+
+    def run(self):
+        try:
+            url = f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{self.handle}?lang=tr&dnt=true"
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/124.0 Safari/537.36",
+                "Accept-Language": "tr-TR,tr;q=0.9"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                html = r.read().decode("utf-8", "replace")
+            self.done_signal.emit(parse_tweets(html, self.handle), "")
+        except Exception as e:
+            self.done_signal.emit([], str(e))
+
+
 class TweetPanel(QWidget):
-    """Kocaelispor'un X (Twitter) hesabındaki son tweet — resmî gömme (embed) bileşeniyle, koyu tema."""
+    """Kocaelispor'un X hesabındaki son tweet'ler — metin olarak, uygulamanın kendi görünümüyle (tarayıcı bileşeni gerekmez)."""
+    STALE_SEC = 600
 
     def __init__(self, win):
         super().__init__()
         self.win = win
         self.extra = load_medya_extra()
-        self._view = None
-        self._built = False
+        self._worker = None
+        self._loaded_at = None
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(6)
+        v.setSpacing(8)
         head = QHBoxLayout()
         head.setSpacing(8)
         t = QLabel("Son tweet")
@@ -3972,60 +4021,87 @@ class TweetPanel(QWidget):
         head.addStretch(1)
         head.addWidget(QLabel("@"))
         self.handle = QLineEdit(str(self.extra.get("x_handle") or "Kocaelispor"))
-        self.handle.setFixedWidth(128)
-        self.handle.setMinimumHeight(28)
+        self.handle.setFixedSize(140, 34)
         self.handle.returnPressed.connect(self.reload)
         head.addWidget(self.handle)
-        rb = QPushButton("Yenile")
-        rb.setObjectName("linkBtn")
-        rb.setCursor(Qt.CursorShape.PointingHandCursor)
-        rb.clicked.connect(self.reload)
-        head.addWidget(rb)
+        self.rb = QPushButton("Yenile")
+        self.rb.setObjectName("linkBtn")
+        self.rb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.rb.clicked.connect(self.reload)
+        head.addWidget(self.rb)
         v.addLayout(head)
-        self.host = QVBoxLayout()
-        self.host.setContentsMargins(0, 0, 0, 0)
-        v.addLayout(self.host, 1)
+        self.rows = QVBoxLayout()
+        self.rows.setSpacing(0)
+        v.addLayout(self.rows)
+        v.addStretch(1)
 
     def _handle_text(self) -> str:
         return self.handle.text().strip().lstrip("@").strip("/ ") or "Kocaelispor"
 
-    def _html(self) -> str:
-        h = self._handle_text()
-        bg = K_CARD
-        return ("<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
-                f"<style>html,body{{margin:0;padding:0;background:{bg};}}</style></head><body>"
-                "<a class='twitter-timeline' data-theme='dark' data-dnt='true' data-tweet-limit='2' "
-                "data-chrome='noheader nofooter noborders transparent' "
-                f"href='https://twitter.com/{h}?ref_src=twsrc%5Etfw'>@{h}</a>"
-                "<script async src='https://platform.twitter.com/widgets.js' charset='utf-8'></script>"
-                "</body></html>")
+    def _open_x(self):
+        QDesktopServices.openUrl(QUrl(f"https://x.com/{self._handle_text()}"))
+
+    def _status(self, text: str, with_link: bool = False):
+        clear_layout(self.rows)
+        lab = QLabel(text)
+        lab.setObjectName("emptyHint")
+        lab.setWordWrap(True)
+        self.rows.addWidget(lab)
+        if with_link:
+            b = QPushButton("X'te aç ›")
+            b.setObjectName("linkBtn")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(self._open_x)
+            self.rows.addWidget(b, 0, Qt.AlignmentFlag.AlignLeft)
 
     def reload(self):
         self.extra["x_handle"] = self._handle_text()
         save_medya_extra(self.extra, keys=("x_handle",))
-        if self._view is not None:
-            self._view.setHtml(self._html(), QUrl("https://twitter.com"))
+        self.refresh()
 
-    def ensure(self):
-        if self._built:
+    def refresh_if_stale(self):
+        if self._loaded_at is None or (datetime.now() - self._loaded_at).total_seconds() > self.STALE_SEC:
+            self.refresh()
+
+    def refresh(self):
+        if self._worker is not None and self._worker.isRunning():
             return
-        self._built = True
-        if not HAS_WEBENGINE:
-            lab = QLabel("Tweet'i göstermek için PyQt6-WebEngine gerekli. Sağdaki Instagram panelindeki "
-                         "\"Şimdi kur\" düğmesiyle kurup uygulamayı yeniden başlat.")
-            lab.setObjectName("emptyHint")
-            lab.setWordWrap(True)
-            self.host.addWidget(lab)
-            self.host.addStretch(1)
+        self.rb.setEnabled(False)
+        if self._loaded_at is None:
+            self._status("Tweet yükleniyor…")
+        self._worker = TweetWorker(self._handle_text())
+        self._worker.done_signal.connect(self._done)
+        self._worker.start()
+
+    def _done(self, tweets: list, error: str):
+        self.rb.setEnabled(True)
+        if not tweets:
+            if self._loaded_at is None:
+                self._status("Tweet'ler alınamadı (X giriş istemiş ya da hesap adı yanlış olabilir).", True)
             return
-        view = QWebEngineView()
-        view.setMinimumHeight(250)
-        page = InstagramPage(view)
-        view.setPage(page)
-        page.setBackgroundColor(QColor(K_CARD))
-        view.setHtml(self._html(), QUrl("https://twitter.com"))
-        self.host.addWidget(view, 1)
-        self._view = view
+        self._loaded_at = datetime.now()
+        clear_layout(self.rows)
+        for tw in tweets:
+            text = tw["text"]
+            if len(text) > 230:
+                text = text[:230].rsplit(" ", 1)[0].rstrip(" ,;:-") + "…"
+            row = ClickableFrame()
+            row.setObjectName("rowLine")
+            row.setProperty("clickable", True)
+            row.setCursor(Qt.CursorShape.PointingHandCursor)
+            row.clicked.connect(lambda link=tw["link"]: QDesktopServices.openUrl(QUrl(link)))
+            lay = QVBoxLayout(row)
+            lay.setContentsMargins(0, 8, 0, 8)
+            lay.setSpacing(3)
+            t = QLabel(text)
+            t.setWordWrap(True)
+            t.setStyleSheet(f"color: {K_TEXT}; font-size: 13px; font-weight: 500; background: transparent; border: none;")
+            lay.addWidget(t)
+            fresh = (datetime.now() - tw["ts"]).total_seconds() < 3 * 3600
+            sub = QLabel(("● " if fresh else "") + f"@{self._handle_text()} · {_news_age(tw['ts'])}")
+            sub.setStyleSheet(f"color: {K_GREEN_HI if fresh else K_MUTED}; font-size: 11px; background: transparent; border: none;")
+            lay.addWidget(sub)
+            self.rows.addWidget(row)
 
 
 def _news_age(dt) -> str:
@@ -5657,7 +5733,7 @@ class MainWindow(QMainWindow):
         self.page_sub.setText(sub)
         if index == PAGE_HOME:
             self.ig_panel.ensure()
-            self.tweet_panel.ensure()
+            self.tweet_panel.refresh_if_stale()
             self.news_panel.refresh_if_stale()
         elif index == PAGE_REVIEW:
             self.review_page.on_show()
