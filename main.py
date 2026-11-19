@@ -6050,6 +6050,13 @@ class MainWindow(QMainWindow):
         self.track_faces.addStretch(1)
 
         # ---- Sağ: sırası gelenler (istatistik/geçmiş yalnız "Geçmiş ve istatistik ›" ile açılır)
+        week = share_stats(log, universe, date.today(), days=7)
+        if week["never"]:
+            warn = make_chip(f"Son 7 günde paylaşılmayan: {week['never']} oyuncu", K_AMBER, K_AMBER_BG)
+        else:
+            warn = make_chip("Son 7 günde herkes paylaşıldı", K_GREEN_HI, K_GREEN_BG)
+        self.track_side.addWidget(warn, 0, Qt.AlignmentFlag.AlignLeft)
+        self.track_side.addSpacing(8)
         cap2 = QLabel("Sırası gelenler")
         cap2.setObjectName("rowTitle")
         self.track_side.addWidget(cap2)
