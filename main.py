@@ -3804,7 +3804,7 @@ class InstagramPanel(QWidget):
         script = QWebEngineScript()
         script.setName("ks_dark")
         script.setSourceCode(js)
-        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
         script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
         script.setRunsOnSubFrames(True)
         page.scripts().insert(script)
@@ -5475,6 +5475,15 @@ class MainWindow(QMainWindow):
             empty.setObjectName("emptyHint")
             self.birthday_rows.addWidget(empty)
             return
+        today = date.today()
+
+        def age_text(b: dict) -> str:
+            dob = b["date"]
+            nxt = today + timedelta(days=b["days_left"])
+            age = nxt.year - dob.year
+            when = f"{dob.day} {TURKISH_MONTHS[dob.month]}"
+            return f"{when} · {age}. yaş" if 1950 < dob.year < today.year else when
+
         soon = [b for b in birthdays if b["days_left"] <= 1]
         for b in soon:
             when = "Bugün" if b["days_left"] == 0 else "Yarın"
@@ -5482,27 +5491,48 @@ class MainWindow(QMainWindow):
             banner.setWordWrap(True)
             self.birthday_rows.addWidget(banner)
             self.birthday_rows.addSpacing(6)
-        for b in birthdays:
+
+        # En yakın doğum günü: büyük vurgulu blok
+        first = birthdays[0]
+        hero = QHBoxLayout()
+        hero.setSpacing(14)
+        hero.addWidget(make_avatar_label(first["name"], 64, "avatarBig"))
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        col.addStretch(1)
+        nm = ElidedLabel(first["name"])
+        nm.setObjectName("dateMain")
+        sub = QLabel(age_text(first))
+        sub.setObjectName("dateSub")
+        col.addWidget(nm)
+        col.addWidget(sub)
+        col.addStretch(1)
+        hero.addLayout(col, 1)
+        cd = QLabel(countdown_text(first["days_left"]))
+        cd.setObjectName("countdown")
+        hero.addWidget(cd)
+        self.birthday_rows.addLayout(hero)
+        self.birthday_rows.addSpacing(10)
+
+        # Sonraki doğum günleri: avatarlı kompakt satırlar
+        for b in birthdays[1:]:
             row = QFrame()
             row.setObjectName("rowLine")
-            row.setFixedHeight(44)
+            row.setFixedHeight(54)
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(10)
+            row_layout.setSpacing(12)
+            row_layout.addWidget(make_avatar_label(b["name"], 40, "avatar"))
             text_col = QVBoxLayout()
             text_col.setSpacing(1)
             name = ElidedLabel(b["name"])
             name.setObjectName("bdName")
-            dob = b["date"]
-            sub = QLabel(f"{dob.day} {TURKISH_MONTHS[dob.month]}")
+            sub = QLabel(age_text(b))
             sub.setObjectName("dateSub")
             text_col.addWidget(name)
             text_col.addWidget(sub)
             row_layout.addLayout(text_col, 1)
-            if b["days_left"] == 0:
-                chip = make_chip("Bugün", "#04140D", K_GREEN)
-            else:
-                chip = make_chip(f"{b['days_left']} gün", K_MUTED, "#1B2A22")
+            chip = make_chip(f"{b['days_left']} gün", K_MUTED, "#1B2A22")
             row_layout.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
             self.birthday_rows.addWidget(row)
 
