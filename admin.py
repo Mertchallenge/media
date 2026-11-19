@@ -38,7 +38,9 @@ K_TEXT = "#EAF2EC"
 K_MUTED = "#8FA398"
 K_BORDER = "#223229"
 
-APP_DIR = Path(__file__).resolve().parent
+APP_DIR = ks_data.user_data_dir()      # .app'te Application Support, geliştirmede script klasörü
+APP_DIR.mkdir(parents=True, exist_ok=True)
+BUNDLE_DIR = ks_data.bundle_dir()
 
 
 # ==========================================================================================
@@ -618,8 +620,8 @@ class AdminWindow(QMainWindow):
         self.resize(1080, 760)
         self.setMinimumSize(880, 560)
 
-        logo_path = APP_DIR / "kocaelispor_logo.png"
-        if logo_path.is_file():
+        logo_path = ks_data.find_asset("kocaelispor_logo.png")
+        if logo_path is not None:
             self.setWindowIcon(QIcon(str(logo_path)))
 
         central = QWidget()

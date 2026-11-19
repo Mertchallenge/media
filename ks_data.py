@@ -15,10 +15,64 @@ hiçbir veri kaybı olmadan buraya taşınmış olur.
 """
 
 import json
+import os
+import sys
 from datetime import date
 from pathlib import Path
 
-DATA_PATH = Path(__file__).resolve().parent / "veri.json"
+APP_FOLDER_NAME = "MediaStaffKS"
+
+
+def is_frozen() -> bool:
+    """PyInstaller ile paketlenmiş (.app) sürümde mi çalışıyoruz?"""
+    return bool(getattr(sys, "frozen", False))
+
+
+def bundle_dir() -> Path:
+    """Uygulamayla BİRLİKTE gelen (salt-okunur) dosyalar: logolar, yazı tipleri, paketlenmiş görseller.
+    Geliştirme modunda script klasörü; .app'te PyInstaller'ın açtığı kaynak klasörü."""
+    if is_frozen():
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    return Path(__file__).resolve().parent
+
+
+def user_data_dir() -> Path:
+    """Kullanıcının kendi dosyaları: veri.json, takım logoları, oyuncu fotoğrafları.
+    .app güncellendiğinde silinmesin diye paketin DIŞINDA durur:
+    macOS: ~/Library/Application Support/MediaStaffKS (MEDIASTAFF_DATA ile değiştirilebilir).
+    Geliştirme modunda (python main.py) eskisi gibi script klasörüdür."""
+    override = os.environ.get("MEDIASTAFF_DATA")
+    if override:
+        return Path(override).expanduser()
+    if is_frozen():
+        if sys.platform == "darwin":
+            return Path.home() / "Library" / "Application Support" / APP_FOLDER_NAME
+        if sys.platform.startswith("win"):
+            return Path(os.environ.get("APPDATA", str(Path.home()))) / APP_FOLDER_NAME
+        return Path.home() / ".local" / "share" / APP_FOLDER_NAME
+    return Path(__file__).resolve().parent
+
+
+def asset_dirs() -> list:
+    """Görsel/yazı tipi aranacak klasörler, öncelik sırasıyla: kullanıcı klasörü, sonra paketin içi."""
+    out = []
+    for d in (user_data_dir(), bundle_dir()):
+        if d not in out:
+            out.append(d)
+    return out
+
+
+def find_asset(*names) -> "Path | None":
+    """asset_dirs() içinde verilen dosya adlarından ilkini bulur (kullanıcı klasörü önce)."""
+    for d in asset_dirs():
+        for n in names:
+            c = d / n
+            if c.is_file():
+                return c
+    return None
+
+
+DATA_PATH = user_data_dir() / "veri.json"
 
 KULUP_ADI = "Kocaelispor"
 _KOCAELISPOR_STADIUM = "Kocaeli Stadyumu"

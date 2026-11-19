@@ -3,7 +3,7 @@ name: Build & release macOS app
 on:
   push:
     branches: [main]
-    paths: ["main.py"]
+    paths: ["main.py", "ks_data.py", "admin.py", "build_mac.sh", "requirements.txt", ".github/workflows/release.yml"]
   workflow_dispatch: {}
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-13
+    runs-on: macos-14   # Apple Silicon (arm64) — macos-13 (Intel) artık kullanılamıyor
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,28 +50,45 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         run: |
           mkdir icon.iconset
-          for size in 16 32 64 128 256 512; do
+          for size in 16 32 128 256 512; do
             sips -z $size $size kocaelispor_logo.png --out "icon.iconset/icon_${size}x${size}.png"
             double=$((size*2))
             sips -z $double $double kocaelispor_logo.png --out "icon.iconset/icon_${size}x${size}@2x.png"
           done
           iconutil -c icns icon.iconset -o icon.icns
 
-      - name: Build app with PyInstaller
+      - name: Build apps with PyInstaller
         if: steps.check.outputs.skip == 'false'
         run: |
-          pyinstaller --windowed --onedir --name MediaStaffKS \
-            --icon icon.icns \
-            --add-data "kocaelispor_logo.png:." \
-            --collect-data certifi \
-            --hidden-import certifi \
+          DATA=(--add-data "kocaelispor_logo.png:." --add-data "ksmedya_logo.png:.")
+          [ -d fonts ] && DATA+=(--add-data "fonts:fonts")
+          pyinstaller --noconfirm --clean --windowed --onedir --name MediaStaffKS \
+            --icon icon.icns --osx-bundle-identifier tr.kocaelispor.mediastaffks \
+            "${DATA[@]}" \
+            --collect-data certifi --hidden-import certifi \
+            --collect-all insightface --collect-all onnxruntime \
+            --hidden-import PyQt6.QtWebEngineWidgets --hidden-import PyQt6.QtWebEngineCore \
+            --exclude-module tkinter \
             main.py
+          pyinstaller --noconfirm --windowed --onedir --name MediaStaffKS-Admin \
+            --icon icon.icns --osx-bundle-identifier tr.kocaelispor.mediastaffks.admin \
+            "${DATA[@]}" --exclude-module tkinter \
+            admin.py
 
-      - name: Zip app bundle
+      - name: Smoke test packaged app (must pass before release)
+        if: steps.check.outputs.skip == 'false'
+        env:
+          QT_QPA_PLATFORM: offscreen
+          MEDIASTAFF_DATA: ${{ runner.temp }}/mediastaff-data
+        run: |
+          dist/MediaStaffKS.app/Contents/MacOS/MediaStaffKS --selftest
+
+      - name: Zip app bundles
         if: steps.check.outputs.skip == 'false'
         run: |
           cd dist
-          zip -r -y MediaStaffKS-mac.zip MediaStaffKS.app
+          ditto -c -k --sequesterRsrc --keepParent MediaStaffKS.app MediaStaffKS-mac.zip
+          ditto -c -k --sequesterRsrc --keepParent MediaStaffKS-Admin.app MediaStaffKS-Admin-mac.zip
 
       - name: Tag and create GitHub release
         if: steps.check.outputs.skip == 'false'
@@ -81,6 +98,6 @@ jobs:
           git tag "${{ steps.ver.outputs.tag }}"
           git push origin "${{ steps.ver.outputs.tag }}"
           gh release create "${{ steps.ver.outputs.tag }}" \
-            dist/MediaStaffKS-mac.zip \
+            dist/MediaStaffKS-mac.zip dist/MediaStaffKS-Admin-mac.zip \
             --title "MediaStaffKS ${{ steps.ver.outputs.tag }}" \
             --generate-notes

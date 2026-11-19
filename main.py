@@ -154,7 +154,7 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.1.0"
 UPDATE_REPO = "Mertchallenge/media"
 UPDATE_API_URL = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
 UPDATE_RAW_MAIN_URL = f"https://raw.githubusercontent.com/{UPDATE_REPO}/main/main.py"
@@ -1274,7 +1274,7 @@ def _version_tuple(v: str) -> tuple:
 
 
 def is_frozen() -> bool:
-    return bool(getattr(sys, "frozen", False))
+    return ks_data.is_frozen()
 
 
 def current_app_bundle_path():
@@ -1319,7 +1319,7 @@ class UpdateCheckWorker(QThread):
         zip_url = ""
         for asset in data.get("assets", []) or []:
             name = str(asset.get("name", ""))
-            if name.lower().endswith(".zip"):
+            if name.lower().endswith(".zip") and "admin" not in name.lower():
                 zip_url = asset.get("browser_download_url", "")
                 break
 
@@ -1352,8 +1352,14 @@ class UpdateDownloadWorker(QThread):
                 zip_path = tmp_dir / "update.zip"
                 zip_path.write_bytes(payload)
                 self.progress.emit("Açılıyor…")
-                with zipfile.ZipFile(zip_path) as zf:
-                    zf.extractall(tmp_dir)
+                done = False
+                if sys.platform == "darwin" and shutil.which("ditto"):
+                    # .app içindeki sembolik bağlar ve çalıştırma izinleri yalnız ditto ile korunur
+                    done = subprocess.run(["ditto", "-x", "-k", str(zip_path), str(tmp_dir)],
+                                          capture_output=True).returncode == 0
+                if not done:
+                    with zipfile.ZipFile(zip_path) as zf:
+                        zf.extractall(tmp_dir)
                 self.done.emit(str(tmp_dir))
             else:
                 py_path = tmp_dir / "main.py"
@@ -1481,12 +1487,13 @@ def clear_layout(layout):
 
 def load_local_fonts():
     """main.py'nin yanındaki 'fonts' klasöründeki yazı tiplerini (varsa) yükler."""
-    fonts_dir = Path(__file__).resolve().parent / "fonts"
-    if not fonts_dir.is_dir():
-        return
-    for pattern in ("*.ttf", "*.otf"):
-        for font_file in fonts_dir.glob(pattern):
-            QFontDatabase.addApplicationFont(str(font_file))
+    for base in ks_data.asset_dirs():
+        fonts_dir = base / "fonts"
+        if not fonts_dir.is_dir():
+            continue
+        for pattern in ("*.ttf", "*.otf"):
+            for font_file in fonts_dir.glob(pattern):
+                QFontDatabase.addApplicationFont(str(font_file))
 
 
 # Kocaelispor kulüp amblemi: önce main.py'nin yanındaki dosya (varsa, kolay değiştirmek
@@ -1500,12 +1507,7 @@ _club_logo_pixmap_cache: dict = {}
 
 
 def club_logo_source_path():
-    base = Path(__file__).resolve().parent
-    for name in CLUB_LOGO_FILENAMES:
-        candidate = base / name
-        if candidate.is_file():
-            return candidate
-    return None
+    return ks_data.find_asset(*CLUB_LOGO_FILENAMES)
 
 
 def _scaled_hidpi(raw: "QPixmap", size: int) -> "QPixmap":
@@ -1570,23 +1572,23 @@ def team_logo_slug(name: str) -> str:
 
 
 def team_logo_source_path(name: str):
-    app_dir = Path(__file__).resolve().parent
+    app_dirs = ks_data.asset_dirs()      # kullanıcı klasörü önce, sonra paketin içi
     slug = team_logo_slug(name)
 
     # 1) Tam eşleşme: "<slug>.png" / "<slug>.PNG"
-    for dirname in TEAM_LOGOS_DIRNAMES:
-        for ext in ("png", "PNG"):
-            candidate = app_dir / dirname / f"{slug}.{ext}"
-            if candidate.is_file():
-                return candidate
+    for app_dir in app_dirs:
+        for dirname in TEAM_LOGOS_DIRNAMES:
+            for ext in ("png", "PNG"):
+                candidate = app_dir / dirname / f"{slug}.{ext}"
+                if candidate.is_file():
+                    return candidate
 
     # 2) Esnek eşleşme: klasördeki her PNG'nin adını da aynı şekilde sadeleştirip
     #    takım slug'ıyla birbirini içerip içermediğine bakar. Böylece "corum.png"
     #    "Çorum FK" (corum_fk) ile, "fenerbahçe.png" "Fenerbahçe" (fenerbahce) ile eşleşir.
     best = None
     best_len = -1
-    for dirname in TEAM_LOGOS_DIRNAMES:
-        folder = app_dir / dirname
+    for folder in [d / dn for d in app_dirs for dn in TEAM_LOGOS_DIRNAMES]:
         if not folder.is_dir():
             continue
         try:
@@ -1698,23 +1700,23 @@ def pick_photo_entry(full_slug: str, entries: list):
 
 
 def player_photo_source_path(name: str):
-    app_dir = Path(__file__).resolve().parent
     full_slug = _name_slug(name)
 
     candidate_dirs = []
-    for dirname in PLAYER_PHOTOS_DIRNAMES:
-        d = app_dir / dirname
-        if d.is_dir():
-            candidate_dirs.append(d)
-    # Klasör adı yukarıdaki listede yoksa bile, içinde boşluk/alt çizgi/"oyuncu" geçen
-    # herhangi bir alt klasörü de dene (ör. "Oyuncularımız 26-27").
-    try:
-        for entry in app_dir.iterdir():
-            if entry.is_dir() and entry not in candidate_dirs:
-                if "oyuncu" in _name_slug(entry.name) or "player" in _name_slug(entry.name):
-                    candidate_dirs.append(entry)
-    except OSError:
-        pass
+    for app_dir in ks_data.asset_dirs():     # kullanıcı klasörü önce, sonra paketin içi
+        for dirname in PLAYER_PHOTOS_DIRNAMES:
+            d = app_dir / dirname
+            if d.is_dir() and d not in candidate_dirs:
+                candidate_dirs.append(d)
+        # Klasör adı yukarıdaki listede yoksa bile, içinde "oyuncu"/"player" geçen
+        # herhangi bir alt klasörü de dene (ör. "Oyuncularımız 26-27").
+        try:
+            for entry in app_dir.iterdir():
+                if entry.is_dir() and entry not in candidate_dirs:
+                    if "oyuncu" in _name_slug(entry.name) or "player" in _name_slug(entry.name):
+                        candidate_dirs.append(entry)
+        except OSError:
+            pass
 
     # 1) Tam eşleşme
     for folder in candidate_dirs:
@@ -2912,8 +2914,8 @@ def load_logo_bgra(kind: str = "KSmedya"):
             names, b64 = KSMEDYA_LOGO_FILENAMES, KSMEDYA_LOGO_BASE64
             path = None
             for n in names:
-                cand = Path(__file__).resolve().parent / n
-                if cand.is_file():
+                cand = ks_data.find_asset(n)
+                if cand is not None:
                     path = cand
                     break
         else:
@@ -3885,6 +3887,14 @@ class InstagramPanel(QWidget):
         if self._built:
             return
         self._built = True
+        if not HAS_WEBENGINE and is_frozen():
+            # Paketlenmiş uygulamada pip ile kurulum yapılamaz; bileşen pakette olmalı.
+            lab = QLabel("Instagram önizlemesi bu sürümde yüklenemedi (web bileşeni pakette yok). "
+                         "Uygulamayı en son sürümle güncellersen düzelir.")
+            lab.setWordWrap(True)
+            lab.setObjectName("noteText")
+            self.host.addWidget(lab)
+            return
         if not HAS_WEBENGINE:
             box = QWidget()
             c = QVBoxLayout(box)
@@ -6797,6 +6807,17 @@ class MainWindow(QMainWindow):
     # ==================================================================
     # SAYFA 5 — AYARLAR
     # ==================================================================
+    def _open_user_data_dir(self):
+        """Oyuncu fotoğrafları, takım logoları ve veri.json'un durduğu klasörü Finder'da açar."""
+        d = ks_data.user_data_dir()
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            for sub in ("oyuncu_fotograflari", "takim_logolari"):
+                (d / sub).mkdir(exist_ok=True)
+        except OSError:
+            pass
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(d)))
+
     def _build_settings_page(self) -> QWidget:
         page = QWidget()
         inner = QWidget()
@@ -6884,10 +6905,19 @@ class MainWindow(QMainWindow):
             "MediaStaffKS · Kocaelispor Medya Departmanı\n"
             "Yüz tanıma: InsightFace (antelopev2 → buffalo_l otomatik düşüş) · Apple Silicon optimizasyonlu\n"
             f"Kaleci havuzu: {', '.join(sorted(GOALKEEPER_POOL))}\n"
-            f"Uygulama verileri: {APP_DIR}")
+            f"Sürüm: {APP_VERSION}\n"
+            f"Uygulama verileri: {APP_DIR}\n"
+            f"Fotoğraf / logo / veri klasörü: {ks_data.user_data_dir()}")
         info.setObjectName("noteText")
         info.setWordWrap(True)
+        info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         b_layout.addWidget(info)
+        open_data_btn = QPushButton("Fotoğraf / veri klasörünü aç")
+        open_data_btn.setObjectName("ghostBtn")
+        open_data_btn.setFixedHeight(38)
+        open_data_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_data_btn.clicked.connect(self._open_user_data_dir)
+        b_layout.addWidget(open_data_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(about)
         layout.addStretch(1)
 
@@ -12520,7 +12550,48 @@ class AppController(QObject):
 # UYGULAMA GİRİŞ NOKTASI
 # ==========================================================================================
 
+def run_selftest() -> int:
+    """Paketlenmiş uygulamanın gerekli parçalarının hepsini içerip içermediğini ekran açmadan denetler
+    (CI'da yayından önce çalıştırılır: MediaStaffKS --selftest)."""
+    problems = []
+
+    def check(label, fn):
+        try:
+            fn()
+            print(f"OK    {label}")
+        except Exception as e:  # noqa: BLE001
+            problems.append(label)
+            print(f"HATA  {label}: {e!r}")
+
+    def _imp(name):
+        return lambda: __import__(name)
+
+    for mod in ("cv2", "numpy", "onnxruntime", "insightface.app", "insightface.model_zoo",
+                "cryptography.fernet", "certifi"):
+        check(f"import {mod}", _imp(mod))
+
+    def _web():
+        if not HAS_WEBENGINE:
+            raise RuntimeError("PyQt6-WebEngine pakette yok")
+    check("QtWebEngine", _web)
+
+    def _logo():
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        p = club_logo_source_path()
+        if p is None or QPixmap(str(p)).isNull():
+            raise RuntimeError("kulüp logosu bulunamadı/yüklenemedi")
+    check("Qt + kulüp logosu", _logo)
+    check("ksmedya logosu", lambda: ks_data.find_asset(*KSMEDYA_LOGO_FILENAMES) or (_ for _ in ()).throw(
+        RuntimeError("ksmedya_logo.png yok")))
+    check("veri katmanı", lambda: ks_data.load_data())
+    print(f"Sürüm {APP_VERSION} · frozen={is_frozen()} · veri klasörü={ks_data.user_data_dir()}")
+    print("SELFTEST " + ("BAŞARISIZ: " + ", ".join(problems) if problems else "BAŞARILI"))
+    return 1 if problems else 0
+
+
 def main():
+    if "--selftest" in sys.argv:
+        sys.exit(run_selftest())
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     load_local_fonts()

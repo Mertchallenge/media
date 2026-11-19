@@ -38,6 +38,35 @@ Her sekmede **Kaydet**'e basmayı unutma — kaydedilen veri `veri.json`'a yazı
 MediaStaffKS'in bir sonraki açılışında otomatik görünür (uygulama açıksa kapatıp
 yeniden açman gerekir).
 
+## Masaüstü uygulaması (.app)
+
+Terminal/VS Code olmadan, Dock'tan açılan gerçek bir Mac uygulaması.
+
+**Mac'inde kurmak (tek komut):** proje klasöründe (main.py'nin olduğu yerde)
+
+```
+bash build_mac.sh
+```
+
+Bu komut kulüp logosundan ikon üretir, `MediaStaffKS.app` ve `MediaStaffKS-Admin.app` dosyalarını
+derler, `/Applications`'a (olmazsa `~/Applications`) kurar ve mevcut `veri.json`, takım logoları ve
+oyuncu fotoğraflarını veri klasörüne kopyalar (var olan dosyaların üzerine yazmaz).
+İlk derleme birkaç dakika sürer; sonra Launchpad/Spotlight/Dock'tan açarsın.
+
+**Veriler nerede?** `.app` güncellenince silinmesin diye paketin dışında:
+`~/Library/Application Support/MediaStaffKS/` (veri.json, `oyuncu_fotograflari/`, `takim_logolari/`).
+Ayarlar → Hakkında → *Fotoğraf / veri klasörünü aç* ile Finder'da açılır. Ana uygulama ve Admin
+uygulaması aynı klasörü kullanır. `python3 main.py` ile (geliştirme) çalıştırırsan eskisi gibi
+script klasörü kullanılır.
+
+**GitHub'dan hazır paket:** `main` dalına push edilince Actions (macOS 14, Apple Silicon)
+uygulamayı derler, paketli uygulamayı `--selftest` ile denetler ve geçerse Release yayınlar.
+İndirdiğin uygulama imzasız olduğu için ilk açılışta: sağ tık → *Aç* (ya da
+`xattr -cr /Applications/MediaStaffKS.app`).
+
+Notlar: yüz tanıma modeli ilk çalıştırmada `~/.insightface` altına indirilir (internet gerekir).
+Paket büyüktür (yüzlerce MB; insightface + onnxruntime + Qt WebEngine).
+
 ## Otomatik güncelleme nasıl çalışır?
 
 - `main.py` içindeki `APP_VERSION` sabiti, uygulamanın şu anki sürümünü tutar.
