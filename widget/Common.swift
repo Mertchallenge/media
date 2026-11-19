@@ -119,6 +119,12 @@ func kindStyle(_ kind: String) -> (fg: Color, bg: Color) {
     }
 }
 
+/// Masaüstü "vurgulu/tek renk" modunda (başka bir pencere öndeyken) opak dolgular düz beyaz olur ve yazıyı yutar;
+/// bu modda dolguyu yarı saydam beyaza çevir ki yazılar okunsun.
+func kindFill(_ c: Color, _ mode: WidgetRenderingMode) -> Color {
+    mode == .fullColor ? c : Color.white.opacity(0.16)
+}
+
 struct WidgetBackground: View {
     var body: some View {
         LinearGradient(colors: [kBg1, kBg2], startPoint: .topLeading, endPoint: .bottomTrailing)

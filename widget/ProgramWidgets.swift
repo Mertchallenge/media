@@ -70,6 +70,7 @@ struct ItemRow: View {
     let item: XItem
     let done: Bool
     let isNext: Bool
+    @Environment(\.widgetRenderingMode) var mode
 
     var body: some View {
         let st = kindStyle(item.kind)
@@ -85,7 +86,7 @@ struct ItemRow: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 9).fill(done ? Color.white.opacity(0.04) : st.bg))
+        .background(RoundedRectangle(cornerRadius: 9).fill(done ? Color.white.opacity(0.04) : kindFill(st.bg, mode)))
         .overlay(RoundedRectangle(cornerRadius: 9).stroke(isNext ? kGreenHi : Color.clear, lineWidth: 1.5))
     }
 }
@@ -210,6 +211,7 @@ struct ProgramWeekProvider: TimelineProvider {
 struct Pill: View {
     let text: String
     let kind: String
+    @Environment(\.widgetRenderingMode) var mode
     var body: some View {
         let st = kindStyle(kind)
         Text(text)
@@ -217,7 +219,7 @@ struct Pill: View {
             .foregroundColor(st.fg)
             .lineLimit(1)
             .padding(.horizontal, 7).padding(.vertical, 3)
-            .background(st.bg)
+            .background(kindFill(st.bg, mode))
             .clipShape(Capsule())
     }
 }
