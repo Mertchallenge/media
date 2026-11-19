@@ -684,7 +684,7 @@ function programWidget(x, family) {
     row.centerAlignContent();
     row.setPadding(5, 9, 5, 9);
     row.cornerRadius = 9;
-    row.backgroundColor = done(i) ? new Color("#FFFFFF", 0.05) : new Color(st[1]);
+    row.backgroundColor = done(i) ? new Color("#FFFFFF", 0.05) : new Color(st[0], 0.16);
     const t = text(row, items[i].time || "Gün boyu", 12, done(i) ? MUTED : st[0], "bold");
     t.minimumScaleFactor = 0.8;
     row.addSpacer(8);
@@ -731,7 +731,7 @@ function weekWidget(x, family) {
       const pill = row.addStack();
       pill.setPadding(3, 6, 3, 6);
       pill.cornerRadius = 8;
-      pill.backgroundColor = new Color(st[1]);
+      pill.backgroundColor = new Color(st[0], 0.16);
       const t = text(pill, pillText(it), 10, st[0], "semi", 1);
       t.minimumScaleFactor = 0.7;
       row.addSpacer(4);
