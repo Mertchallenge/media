@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.5.3"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Günün son etkinliğinden 30 dk sonra program yarını gösterir (ana sayfa, mini pencere, menü çubuğu, widget'lar)."
+UPDATE_NOTES = "Ayarlar → Hakkında: iPhone widget eşitleme durumu ve \"şimdi eşitle\" düğmesi."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -6591,6 +6591,30 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             pass
 
+    def _ios_status_text(self) -> str:
+        st = getattr(self, "_ios_state", None)
+        if not st:
+            return "iPhone widget'ları: henüz eşitlenmedi."
+        kind, detail = st
+        if kind == "ok":
+            return f"iPhone widget'ları: iCloud'a yazıldı ({datetime.now().strftime('%H:%M')} · {detail}). Betik sürümü {APP_VERSION}."
+        if kind == "no_icloud":
+            return ("iPhone widget'ları: Scriptable'ın iCloud klasörü Mac'te bulunamadı. iPhone'da Scriptable'ı açıp "
+                    "iCloud Drive'ı etkinleştir, Mac'te Finder → iCloud Drive → Scriptable klasörünün göründüğünü kontrol et.")
+        return f"iPhone widget'ları: eşitleme hatası — {detail}"
+
+    def _ios_sync_now(self):
+        self._write_widget_data_from_log()
+        self._write_widget_extra()
+        if hasattr(self, "ios_status"):
+            self.ios_status.setText(self._ios_status_text())
+
+    def _write_widget_data_from_log(self):
+        try:
+            self._refresh_share_track()
+        except Exception:  # noqa: BLE001
+            pass
+
     def _ios_sync(self):
         """Widget verisini (ve iPhone betiğini) Scriptable'ın iCloud klasörüne kopyalar; Scriptable yoksa sessizce geçer."""
         try:
@@ -6598,6 +6622,11 @@ class MainWindow(QMainWindow):
             self._ios_state = ks_data.ios_sync(folder)
         except Exception as exc:  # noqa: BLE001
             self._ios_state = ("error", str(exc))
+        try:
+            if hasattr(self, "ios_status"):
+                self.ios_status.setText(self._ios_status_text())
+        except Exception:  # noqa: BLE001
+            pass
 
     def _refresh_club_cards(self):
         self._refresh_share_track()
@@ -7694,6 +7723,16 @@ class MainWindow(QMainWindow):
         upd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         upd_btn.clicked.connect(lambda: start_update_check(self, manual=True))
         b_layout.addWidget(upd_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.ios_status = QLabel(self._ios_status_text())
+        self.ios_status.setObjectName("noteText")
+        self.ios_status.setWordWrap(True)
+        b_layout.addWidget(self.ios_status)
+        ios_btn = QPushButton("iPhone widget'larını şimdi eşitle")
+        ios_btn.setObjectName("ghostBtn")
+        ios_btn.setFixedHeight(38)
+        ios_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        ios_btn.clicked.connect(self._ios_sync_now)
+        b_layout.addWidget(ios_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         self.tm_status = QLabel(self._tm_status_text())
         self.tm_status.setObjectName("noteText")
         self.tm_status.setWordWrap(True)
