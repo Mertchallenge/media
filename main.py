@@ -2473,6 +2473,9 @@ except ImportError:  # paket yoksa korumalı departmanlar açılmaz, Medya çal�
         pass
 
 DEPARTMENTS = ["medya", "saglik", "idari", "teknik", "futbolcu"]
+# Giriş ekranında görünen departmanlar. Futbolcu bölümü şimdilik gizli; kodu yerinde duruyor,
+# tekrar açmak için "futbolcu"yu bu listeye geri eklemek yeterli.
+VISIBLE_DEPARTMENTS = ["medya", "saglik", "idari", "teknik"]
 STORE_FILES = {"saglik": "saglik.enc", "idari": "idari.enc", "teknik": "teknik.enc"}
 SHARED_PATH = os.path.join(APP_DIR, "paylasim.enc")
 APP_KEY_PATH = os.path.join(APP_DIR, "uygulama.key")
@@ -8565,11 +8568,12 @@ class LauncherWindow(UiKit, QMainWindow):
         self._tiles = {}
         self._last_slots = {}
         prev = None
-        for n, (key, icon, desc, lock) in enumerate(DEPT_CARDS, start=1):
+        for n, (key, icon, desc, lock) in enumerate(
+                [c for c in DEPT_CARDS if c[0] in VISIBLE_DEPARTMENTS], start=1):
             tile = self._tile(key, icon, desc, lock, n)
             self._tiles[key] = tile
             grid.addWidget(tile)
-            # 1–5 tuşlarıyla hızlı giriş
+            # 1–4 tuşlarıyla hızlı giriş
             sc = QShortcut(QKeySequence(str(n)), self)
             sc.activated.connect(lambda k=key: self.department_chosen.emit(k))
             if prev is not None:
@@ -8585,7 +8589,7 @@ class LauncherWindow(UiKit, QMainWindow):
         footer.addSpacing(10)
         footer.addWidget(self._text("Sonraki açılışta bu seçimi hatırla", "cellText", False))
         footer.addStretch(1)
-        footer.addWidget(self._text("1–5 tuşlarıyla hızlı giriş  ·  Tab / Enter ile de seçebilirsin", "dateSub", False))
+        footer.addWidget(self._text(f"1–{len(VISIBLE_DEPARTMENTS)} tuşlarıyla hızlı giriş  ·  Tab / Enter ile de seçebilirsin", "dateSub", False))
         footer.addSpacing(24)
         footer.addWidget(self._icon_label("shield", K_DIM, 16))
         footer.addWidget(self._text("Departman verileri bu bilgisayarda saklanır, diğer departmanlar göremez.",
@@ -8702,10 +8706,10 @@ class AppController(QObject):
         cfg = load_config()
         key = cfg.get("last_dept", "")
         self.launcher.set_remember(bool(cfg.get("remember_dept")))
-        if key in DEPARTMENTS:
+        if key in VISIBLE_DEPARTMENTS:
             self.launcher.set_last(key)
         QTimer.singleShot(1500, lambda: start_update_check(self.launcher))
-        if cfg.get("remember_dept") and key in DEPARTMENTS and self.open_department(key):
+        if cfg.get("remember_dept") and key in VISIBLE_DEPARTMENTS and self.open_department(key):
             return
         self.show_launcher()
 
