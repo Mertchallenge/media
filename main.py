@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Fikstür artık TFF sitesinden otomatik güncelleniyor (açılışta ve düzenli aralıklarla)."
+UPDATE_NOTES = "Fikstür artık Transfermarkt'tan otomatik güncelleniyor (TFF okuyucusu kaldırıldı, hatalı kayıtlar temizlenir)."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -4049,21 +4049,20 @@ def parse_news_feed(xml_bytes: bytes, limit: int = 8) -> list:
     return items[:limit]
 
 
-TFF_STATE_PATH = os.path.join(APP_DIR, "tff_senkron.json")
-TFF_REFRESH_SEC = 6 * 3600          # fikstür en geç bu kadar sürede bir TFF'den tazelenir
-TFF_RETRY_SEC = 25 * 60             # başarısız denemeden sonra bu kadar bekle
-TFF_MIN_MATCHES = 5                 # bundan az Kocaelispor maçı okunduysa sayfa okunamamış sayılır
+TM_STATE_PATH = os.path.join(APP_DIR, "tm_senkron.json")
+TM_REFRESH_SEC = 6 * 3600           # fikstür en geç bu kadar sürede bir Transfermarkt'tan tazelenir
+TM_RETRY_SEC = 25 * 60              # başarısız denemeden sonra bu kadar bekle
 
 
-class TffSyncWorker(QThread):
-    """TFF sitesinden tüm haftaları indirip Kocaelispor maçlarını ayıklar (ağ işi; dosyaya yazmaz)."""
+class TmSyncWorker(QThread):
+    """Transfermarkt fikstür sayfasını indirip okur (ağ işi; dosyaya yazmaz)."""
     done_signal = pyqtSignal(dict)
 
     def run(self):
         try:
-            res = ks_data.tff_sync(ssl_context=_update_ssl_context(), debug_dir=APP_DIR)
+            res = ks_data.tm_sync(ssl_context=_update_ssl_context())
         except Exception as e:  # noqa: BLE001
-            res = {"all": [], "kocaeli": [], "errors": 99, "weeks_ok": 0, "first_error": str(e)}
+            res = {"matches": [], "error": str(e) or e.__class__.__name__, "html": ""}
         self.done_signal.emit(res)
 
 
@@ -5431,36 +5430,37 @@ class MainWindow(QMainWindow):
                 break
         self._go_to(PAGE_HOME)
 
-        # Fikstürü TFF'den otomatik güncel tut: açılışta (gerekirse) ve her 30 dakikada bir "süresi doldu mu?" kontrolü
-        self._tff_worker = None
-        self._tff_manual = False
-        self._tff_timer = QTimer(self)
-        self._tff_timer.setInterval(30 * 60 * 1000)
-        self._tff_timer.timeout.connect(self._tff_auto)
-        self._tff_timer.start()
-        QTimer.singleShot(4000, self._tff_auto)
+        # Fikstürü Transfermarkt'tan otomatik güncel tut: açılışta (gerekirse) ve her 30 dakikada bir "süresi doldu mu?" kontrolü
+        self._tm_worker = None
+        self._tm_page = None
+        self._tm_manual = False
+        self._tm_timer = QTimer(self)
+        self._tm_timer.setInterval(30 * 60 * 1000)
+        self._tm_timer.timeout.connect(self._tm_auto)
+        self._tm_timer.start()
+        QTimer.singleShot(4000, self._tm_auto)
 
     # ==================================================================
-    # FİKSTÜR: TFF OTOMATİK SENKRON
+    # FİKSTÜR: TRANSFERMARKT OTOMATİK SENKRON
     # ==================================================================
-    def _tff_state(self) -> dict:
-        st = read_json(TFF_STATE_PATH, {})
+    def _tm_state(self) -> dict:
+        st = read_json(TM_STATE_PATH, {})
         return st if isinstance(st, dict) else {}
 
-    def _tff_status_text(self) -> str:
-        st = self._tff_state()
+    def _tm_status_text(self) -> str:
+        st = self._tm_state()
         if st.get("last_ok"):
             try:
                 when = datetime.fromisoformat(st["last_ok"]).strftime("%d.%m.%Y %H:%M")
             except ValueError:
                 when = st["last_ok"]
-            text = f"Fikstür TFF'den otomatik güncellenir. Son eşitleme: {when} · Kocaelispor {st.get('count', '?')} maç"
+            text = f"Fikstür Transfermarkt'tan otomatik güncellenir. Son eşitleme: {when} · {st.get('future', '?')} yaklaşan maç"
             if st.get("error"):
                 text += f"\nSon deneme başarısız oldu: {st['error']}"
             return text
         if st.get("last_try"):
-            return f"Fikstür TFF'den okunamadı ({st.get('error') or 'bilinmeyen hata'}). Mevcut fikstür kullanılıyor."
-        return "Fikstür TFF'den otomatik güncellenir (henüz eşitlenmedi)."
+            return f"Fikstür Transfermarkt'tan okunamadı ({st.get('error') or 'bilinmeyen hata'}). Mevcut fikstür kullanılıyor."
+        return "Fikstür Transfermarkt'tan otomatik güncellenir (henüz eşitlenmedi)."
 
     @staticmethod
     def _age_sec(iso_text) -> "float | None":
@@ -5469,66 +5469,110 @@ class MainWindow(QMainWindow):
         except ValueError:
             return None
 
-    def _tff_auto(self):
-        st = self._tff_state()
+    def _tm_busy(self) -> bool:
+        return (self._tm_worker is not None and self._tm_worker.isRunning()) or self._tm_page is not None
+
+    def _tm_auto(self):
+        st = self._tm_state()
         ok_age = self._age_sec(st.get("last_ok"))
         try_age = self._age_sec(st.get("last_try"))
-        if ok_age is not None and ok_age < TFF_REFRESH_SEC:
+        if ok_age is not None and ok_age < TM_REFRESH_SEC:
             return                      # yakın zamanda başarıyla eşitlendi
-        if try_age is not None and try_age < TFF_RETRY_SEC:
+        if try_age is not None and try_age < TM_RETRY_SEC:
             return                      # yakın zamanda denendi (başarısızsa biraz bekle)
-        self._tff_sync_start(manual=False)
+        self._tm_sync_start(manual=False)
 
-    def _tff_sync_start(self, manual: bool = False):
-        if self._tff_worker is not None and self._tff_worker.isRunning():
+    def _tm_sync_start(self, manual: bool = False):
+        if self._tm_busy():
             return
-        self._tff_manual = manual
-        st = self._tff_state()
+        self._tm_manual = manual
+        st = self._tm_state()
         st["last_try"] = datetime.now().isoformat(timespec="seconds")
-        write_json(TFF_STATE_PATH, st)
-        if getattr(self, "tff_status", None) is not None:
-            self.tff_status.setText("TFF'den fikstür indiriliyor… (birkaç saniye sürer)")
-        self._tff_worker = TffSyncWorker(self)
-        self._tff_worker.done_signal.connect(self._tff_sync_done)
-        self._tff_worker.start()
+        write_json(TM_STATE_PATH, st)
+        if getattr(self, "tm_status", None) is not None:
+            self.tm_status.setText("Transfermarkt'tan fikstür indiriliyor… (birkaç saniye sürer)")
+        self._tm_worker = TmSyncWorker(self)
+        self._tm_worker.done_signal.connect(self._tm_worker_done)
+        self._tm_worker.start()
 
-    def _tff_sync_done(self, res: dict):
-        st = self._tff_state()
-        matches = res.get("kocaeli") or []
-        if len(matches) >= TFF_MIN_MATCHES:
+    def _tm_worker_done(self, res: dict):
+        # Doğrudan indirme engellenirse (ör. 403) gerçek bir tarayıcı motoruyla (QtWebEngine) bir kez daha dene
+        if res.get("error") and not res.get("html") and HAS_WEBENGINE:
+            self._tm_webengine_fetch()
+            return
+        self._tm_apply(res)
+
+    def _tm_webengine_fetch(self):
+        season = ks_data.tm_season_for()
+        page = QWebEnginePage(self)
+        self._tm_page = page
+        done = {"v": False}
+
+        def finish(html: str, err: str = ""):
+            if done["v"]:
+                return
+            done["v"] = True
+            self._tm_page = None
+            page.deleteLater()
+            if html:
+                self._tm_apply(ks_data.tm_sync(html=html))
+            else:
+                self._tm_apply({"matches": [], "error": err or "sayfa yüklenemedi", "html": ""})
+
+        def loaded(ok: bool):
+            if not ok:
+                finish("", "Transfermarkt sayfası yüklenemedi")
+                return
+            QTimer.singleShot(1500, lambda: page.toHtml(lambda h: finish(h or "")))
+
+        page.loadFinished.connect(loaded)
+        QTimer.singleShot(45000, lambda: finish("", "zaman aşımı"))
+        page.load(QUrl(ks_data.TM_URL.format(season=season)))
+
+    def _tm_apply(self, res: dict):
+        st = self._tm_state()
+        matches = res.get("matches") or []
+        err = res.get("error") or ""
+        if not err and matches:
             try:
+                backup = ks_data.backup_data_file()
                 raw = ks_data.load_raw()
-                merged, stats = ks_data.tff_merge(raw.get("fixtures", []), matches)
-                if stats["added"] or stats["updated"]:
+                merged, stats = ks_data.tm_merge(raw.get("fixtures", []), matches)
+                if stats["future"] > 0:
                     ks_data.save_fixtures(merged)
                     MANUAL_FIXTURES[:] = ks_data.load_data()["fixtures"]
                     self._refresh_club_cards()
                     self._refresh_matches_page()
-                st.update({"last_ok": datetime.now().isoformat(timespec="seconds"), "count": len(matches),
-                           "error": "", "added": stats["added"], "updated": stats["updated"]})
-                if self._tff_manual:
+                st.update({"last_ok": datetime.now().isoformat(timespec="seconds"), "future": stats["future"],
+                           "error": "", "added": stats["added"], "removed": stats["removed"]})
+                if self._tm_manual:
                     QMessageBox.information(
                         self, "Fikstür",
-                        f"TFF ile eşitlendi: {len(matches)} maç ({stats['added']} yeni, {stats['updated']} değişen).")
+                        f"Transfermarkt ile eşitlendi: {stats['future']} yaklaşan maç "
+                        f"({stats['added']} yeni, {stats['removed']} kaldırılan).\n"
+                        f"Eski veri yedeği: {backup.name if backup else 'alınamadı'}")
             except Exception as e:  # noqa: BLE001
                 st["error"] = f"kaydedilemedi: {e}"
-                if self._tff_manual:
+                if self._tm_manual:
                     QMessageBox.warning(self, "Fikstür", f"Fikstür kaydedilemedi:\n{e}")
         else:
-            if res.get("first_error"):
-                reason = res["first_error"]
-            elif res.get("weeks_ok", 0) == 0:
-                reason = "sayfa okunamadı (maç bulunamadı)"
-            else:
-                reason = f"yalnız {len(matches)} Kocaelispor maçı bulundu"
-            st["error"] = str(reason)[:120]
-            if self._tff_manual:
-                dbg = os.path.join(APP_DIR, "tff_debug.html")
-                extra = f"\n\nSorun giderme için sayfa şuraya kaydedildi:\n{dbg}" if os.path.isfile(dbg) else ""
-                QMessageBox.warning(self, "Fikstür", f"TFF'den fikstür alınamadı:\n{reason}{extra}")
-        write_json(TFF_STATE_PATH, st)
-        if getattr(self, "tff_status", None) is not None:
-            self.tff_status.setText(self._tff_status_text())
+            reason = err or "maç bulunamadı"
+            st["error"] = str(reason)[:140]
+            html = res.get("html") or ""
+            extra = ""
+            if html:
+                try:                    # okunamayan sayfayı sorun giderme için sakla
+                    dbg = os.path.join(APP_DIR, "tm_debug.html")
+                    with open(dbg, "w", encoding="utf-8") as fh:
+                        fh.write(html)
+                    extra = f"\n\nSorun giderme için sayfa şuraya kaydedildi:\n{dbg}"
+                except OSError:
+                    pass
+            if self._tm_manual:
+                QMessageBox.warning(self, "Fikstür", f"Transfermarkt'tan fikstür alınamadı:\n{reason}{extra}")
+        write_json(TM_STATE_PATH, st)
+        if getattr(self, "tm_status", None) is not None:
+            self.tm_status.setText(self._tm_status_text())
 
     # ==================================================================
     # ORTAK PARÇALAR
@@ -6267,7 +6311,7 @@ class MainWindow(QMainWindow):
         nm = get_next_fixture()
         if nm is None:
             self.next_layout.addLayout(head)
-            empty = QLabel("Yaklaşan maç bulunamadı.\nFikstür TFF'den otomatik güncellenir (Ayarlar → Fikstürü TFF'den şimdi güncelle).")
+            empty = QLabel("Yaklaşan maç bulunamadı.\nFikstür Transfermarkt'tan otomatik güncellenir (Ayarlar → Fikstürü Transfermarkt'tan şimdi güncelle).")
             empty.setObjectName("emptyHint")
             empty.setWordWrap(True)
             self.next_layout.addWidget(empty)
@@ -6314,7 +6358,7 @@ class MainWindow(QMainWindow):
         date_main = QLabel(f"{d.day} {TURKISH_MONTHS[d.month]}, {DAYS_TR[d.weekday()]}")
         date_main.setObjectName("dateMain")
         stadium = nm.get("stadium") or ""
-        date_sub = QLabel(f"{nm['time']} · {stadium}" if stadium else nm["time"])
+        date_sub = QLabel(f"{nm['time'] or 'Saat belli değil'} · {stadium}" if stadium else (nm["time"] or "Saat belli değil"))
         date_sub.setObjectName("dateSub")
         when_col.addWidget(date_main)
         when_col.addWidget(date_sub)
@@ -6357,7 +6401,7 @@ class MainWindow(QMainWindow):
             date_label.setFixedWidth(54)
             opponent = ElidedLabel(fx["opponent"])
             opponent.setObjectName("fxOpp")
-            time_label = QLabel(fx["time"])
+            time_label = QLabel(fx["time"] or "—")
             time_label.setObjectName("fxTime")
             if fx["home"]:
                 chip = make_chip("İç saha", K_GREEN_HI, K_GREEN_BG)
@@ -6593,7 +6637,7 @@ class MainWindow(QMainWindow):
         for col, (caption, value) in enumerate((
                 ("Tarih", f"{d.day} {TURKISH_MONTHS[d.month]} {d.year}"),
                 ("Gün", DAYS_TR[d.weekday()]),
-                ("Başlama saati", fx["time"]),
+                ("Başlama saati", fx["time"] or "Belli değil"),
                 ("Kalan süre", countdown_text(days_left)),
                 ("Stadyum", fx.get("stadium") or "—"))):
             cell = QVBoxLayout()
@@ -7087,16 +7131,16 @@ class MainWindow(QMainWindow):
         upd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         upd_btn.clicked.connect(lambda: start_update_check(self, manual=True))
         b_layout.addWidget(upd_btn, alignment=Qt.AlignmentFlag.AlignLeft)
-        self.tff_status = QLabel(self._tff_status_text())
-        self.tff_status.setObjectName("noteText")
-        self.tff_status.setWordWrap(True)
-        b_layout.addWidget(self.tff_status)
-        tff_btn = QPushButton("Fikstürü TFF'den şimdi güncelle")
-        tff_btn.setObjectName("ghostBtn")
-        tff_btn.setFixedHeight(38)
-        tff_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        tff_btn.clicked.connect(lambda: self._tff_sync_start(manual=True))
-        b_layout.addWidget(tff_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.tm_status = QLabel(self._tm_status_text())
+        self.tm_status.setObjectName("noteText")
+        self.tm_status.setWordWrap(True)
+        b_layout.addWidget(self.tm_status)
+        tm_btn = QPushButton("Fikstürü Transfermarkt'tan şimdi güncelle")
+        tm_btn.setObjectName("ghostBtn")
+        tm_btn.setFixedHeight(38)
+        tm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        tm_btn.clicked.connect(lambda: self._tm_sync_start(manual=True))
+        b_layout.addWidget(tm_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(about)
         layout.addStretch(1)
 
