@@ -1508,6 +1508,18 @@ def club_logo_source_path():
     return None
 
 
+def _scaled_hidpi(raw: "QPixmap", size: int) -> "QPixmap":
+    """Logoyu ekranın gerçek piksel yoğunluğunda (Retina'da 2x) ölçekler; mantıksal boyut `size` kalır."""
+    try:
+        dpr = max(1.0, float(QApplication.primaryScreen().devicePixelRatio()))
+    except Exception:
+        dpr = 2.0
+    px = max(size, int(round(size * dpr)))
+    scaled = raw.scaled(px, px, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    scaled.setDevicePixelRatio(px / size)
+    return scaled
+
+
 def get_club_logo_pixmap(size: int):
     """Kulüp amblemini verilen piksel boyuta sığacak şekilde (en-boy korunarak) döndürür."""
     if size in _club_logo_pixmap_cache:
@@ -1526,9 +1538,7 @@ def get_club_logo_pixmap(size: int):
     if not loaded or raw.isNull():
         _club_logo_pixmap_cache[size] = None
         return None
-    scaled = raw.scaled(
-        size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-    )
+    scaled = _scaled_hidpi(raw, size)
     _club_logo_pixmap_cache[size] = scaled
     return scaled
 
@@ -1609,8 +1619,7 @@ def get_team_logo_pixmap(name: str, size: int):
     if path is not None:
         raw = QPixmap()
         if raw.load(str(path)) and not raw.isNull():
-            pixmap = raw.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
-                                 Qt.TransformationMode.SmoothTransformation)
+            pixmap = _scaled_hidpi(raw, size)
     _team_logo_pixmap_cache[cache_key] = pixmap
     return pixmap
 
@@ -2717,6 +2726,13 @@ def remove_last_share_entry():
     log = load_share_log()
     if log:
         write_json(SHARE_LOG_PATH, log[1:])
+
+
+def replace_share_entry(old_iso: str, new_day, players: list):
+    """Var olan kaydı yeni tarih/oyuncu listesiyle değiştirir (tarih başka bir kayıtla çakışırsa birleşir)."""
+    write_json(SHARE_LOG_PATH, [e for e in load_share_log() if e["date"] != old_iso])
+    if players:
+        add_share_entry(new_day, players)
 
 
 def remove_share_entry(iso_date: str):
@@ -4472,6 +4488,11 @@ class ShareHistoryDialog(QDialog):
         top.addWidget(t)
         top.addWidget(make_chip(f"{len(e['players'])} oyuncu", K_MUTED, "#1B2A22"))
         top.addStretch(1)
+        ed = QPushButton("Düzenle")
+        ed.setObjectName("linkBtn")
+        ed.setCursor(Qt.CursorShape.PointingHandCursor)
+        ed.clicked.connect(lambda checked=False, ent=e: self._edit(ent))
+        top.addWidget(ed)
         rm = QPushButton("Sil")
         rm.setObjectName("linkBtn")
         rm.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -4484,6 +4505,19 @@ class ShareHistoryDialog(QDialog):
         v.addWidget(names)
         return box
 
+    def _edit(self, e: dict):
+        try:
+            day = date.fromisoformat(e["date"])
+        except ValueError:
+            day = date.today()
+        dlg = ShareLogDialog(self.universe, e["players"], self, day=day, editing=True)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            new_day, players = dlg.result_data()
+            if players:
+                replace_share_entry(e["date"], new_day, players)
+                self.changed = True
+                self.refresh()
+
     def _remove(self, iso: str):
         ans = QMessageBox.question(self, "Kaydı sil", f"{iso} tarihli paylaşım kaydı silinsin mi?")
         if ans == QMessageBox.StandardButton.Yes:
@@ -4495,14 +4529,14 @@ class ShareHistoryDialog(QDialog):
 class ShareLogDialog(QDialog):
     """Sosyal medyada paylaşılan oyuncuları işaretleyip günlüğe kaydeder."""
 
-    def __init__(self, names: list, preselect: list, parent=None):
+    def __init__(self, names: list, preselect: list, parent=None, day=None, editing: bool = False):
         super().__init__(parent)
-        self.setWindowTitle("Paylaşımı kaydet")
+        self.setWindowTitle("Paylaşımı düzenle" if editing else "Paylaşımı kaydet")
         self.resize(460, 640)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 20, 22, 18)
         lay.setSpacing(12)
-        title = QLabel("Hangi oyuncular paylaşıldı?")
+        title = QLabel("Paylaşımı düzenle" if editing else "Hangi oyuncular paylaşıldı?")
         title.setObjectName("pageTitle")
         lay.addWidget(title)
         info = QLabel("Instagram / X / Facebook'ta paylaştığın oyuncuları işaretle; tarih antrenman günü olsun.")
@@ -4512,7 +4546,7 @@ class ShareLogDialog(QDialog):
         self.date_edit = QDateEdit()
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDisplayFormat("dd.MM.yyyy")
-        self.date_edit.setDate(QDate.currentDate())
+        self.date_edit.setDate(QDate(day.year, day.month, day.day) if day else QDate.currentDate())
         self.date_edit.setMinimumHeight(34)
         lay.addWidget(self.date_edit)
         self.checks = []
@@ -4521,7 +4555,7 @@ class ShareLogDialog(QDialog):
         il.setContentsMargins(0, 0, 0, 0)
         il.setSpacing(4)
         pre = set(preselect)
-        for n in sorted(names, key=turkish_lower):
+        for n in sorted(set(names) | set(preselect), key=turkish_lower):
             cb = QCheckBox(n)
             cb.setChecked(n in pre)
             cb.toggled.connect(self._update_count)
