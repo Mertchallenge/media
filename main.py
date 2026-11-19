@@ -92,6 +92,29 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime, date, timedelta
 
+# --- ÇÖKME TEŞHİSİ ---------------------------------------------------------------------------
+# Uygulama sessizce kapanırsa (ONNX/CoreML/OpenCV kaynaklı native çökme Python'da yakalanamaz),
+# çökme izi ve son işlenen fotoğraf ev klasöründeki dosyalara yazılır:
+#   ~/MediaStaffKS_crash.log        -> native çökme izi (faulthandler)
+#   ~/MediaStaffKS_son_foto.txt     -> işlenmeye BAŞLANAN son fotoğraf (çökerse suçlu budur)
+import faulthandler
+CRASH_LOG_PATH = os.path.join(os.path.expanduser("~"), "MediaStaffKS_crash.log")
+LAST_PHOTO_PATH = os.path.join(os.path.expanduser("~"), "MediaStaffKS_son_foto.txt")
+try:
+    _crash_fh = open(CRASH_LOG_PATH, "a", buffering=1)
+    faulthandler.enable(file=_crash_fh, all_threads=True)
+except Exception:
+    pass
+
+
+def _remember_photo(path: str, i: int, total: int):
+    try:
+        with open(LAST_PHOTO_PATH, "w", encoding="utf-8") as fh:
+            fh.write(f"{i}/{total}\n{path}\n")
+    except Exception:
+        pass
+
+
 import ks_data  # main.py/admin.py arasında paylaşılan fikstür+kadro veri katmanı (veri.json)
 
 from PyQt6.QtCore import (
@@ -866,6 +889,7 @@ class ExtractionWorker(QThread):
                     break
 
                 filename = os.path.basename(path)
+                _remember_photo(path, i, stats["toplam"])
                 try:
                     img = imread_unicode(path)
                     if img is None:
