@@ -2472,11 +2472,11 @@ except ImportError:  # paket yoksa korumalı departmanlar açılmaz, Medya çal�
     class InvalidToken(Exception):
         pass
 
-DEPARTMENTS = ["medya", "saglik", "idari", "teknik", "futbolcu"]
+DEPARTMENTS = ["medya", "saglik", "idari", "teknik", "diyetisyen", "futbolcu"]
 # Giriş ekranında görünen departmanlar. Futbolcu bölümü şimdilik gizli; kodu yerinde duruyor,
 # tekrar açmak için "futbolcu"yu bu listeye geri eklemek yeterli.
-VISIBLE_DEPARTMENTS = ["medya", "saglik", "idari", "teknik"]
-STORE_FILES = {"saglik": "saglik.enc", "idari": "idari.enc", "teknik": "teknik.enc"}
+VISIBLE_DEPARTMENTS = ["medya", "saglik", "idari", "teknik", "diyetisyen"]
+STORE_FILES = {"saglik": "saglik.enc", "idari": "idari.enc", "teknik": "teknik.enc", "diyetisyen": "diyetisyen.enc"}
 SHARED_PATH = os.path.join(APP_DIR, "paylasim.enc")
 APP_KEY_PATH = os.path.join(APP_DIR, "uygulama.key")
 PLAYER_PIN_PATH = os.path.join(APP_DIR, "futbolcu_pin.json")
@@ -2530,11 +2530,16 @@ def default_admin_data() -> dict:
     return {"contracts": {}, "travel": [], "documents": [], "contacts": {}, "tasks": []}
 
 
+def default_diet_data() -> dict:
+    return {"body": {}, "plans": {}, "allergies": {}, "supplements": {}, "menus": {}}
+
+
 def default_staff_data() -> dict:
     return {"training": [], "match_prep": {}, "evals": {}, "stats": {}, "reports": []}
 
 
-DEFAULT_FACTORIES = {"saglik": default_health_data, "idari": default_admin_data, "teknik": default_staff_data}
+DEFAULT_FACTORIES = {"saglik": default_health_data, "idari": default_admin_data, "teknik": default_staff_data,
+                     "diyetisyen": default_diet_data}
 
 
 class SecureStore:
@@ -4527,6 +4532,8 @@ ICON_SVG.update({
     "key": ('<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>', False),
     "file": ('<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><path d="M14 2v6h6"/>', False),
     "plus": ('<path d="M12 5v14M5 12h14"/>', False),
+    "leaf": ('<path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z"/>'
+             '<path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12"/>', False),
     "trash": ('<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>', False),
     "edit": ('<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/>', False),
     "back": ('<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>', False),
@@ -4539,6 +4546,7 @@ ACCENTS = {
     "saglik":   dict(acc="#3FBAD6", hi="#7ADCF0", bg="#0E2A33", hover="#5CCBE4", border="#1F5A6B", on="#04141A"),
     "idari":    dict(acc="#E0A23A", hi="#F2C36B", bg="#2A2113", hover="#EDB552", border="#6B4E1F", on="#1A1204"),
     "teknik":   dict(acc="#8E7CF0", hi="#B6A9FF", bg="#1E1A3A", hover="#A090FF", border="#463C8A", on="#0E0A24"),
+    "diyetisyen": dict(acc="#8CC63F", hi="#B8E07A", bg="#1B2A12", hover="#A2D95A", border="#476B1F", on="#0E1805"),
     "futbolcu": dict(acc="#EE7D5E", hi="#F7A48C", bg="#33201A", hover="#F5906F", border="#7A3F2E", on="#1F0C06"),
 }
 # Medya dışındaki departmanlar biraz daha soğuk (mavimsi) siyah tonlar kullanır.
@@ -4654,6 +4662,7 @@ THEMES = {
         # departman vurguları (açık zeminde okunur olsun)
         "#7ADCF0": "#2A8FA8", "#F2C36B": "#A86A00", "#B6A9FF": "#6B4FD6", "#F7A48C": "#C25A3D",
         "#0E2A33": "#DDF1F6", "#1E1A3A": "#ECE8FD", "#33201A": "#FCE9E2",
+        "#B8E07A": "#4F7A12", "#1B2A12": "#EAF5D6",
     },
 }
 ACTIVE_THEME = "gece"
@@ -8240,6 +8249,829 @@ class StaffWindow(DeptWindow):
 
 
 # ==========================================================================================
+# DİYETİSYEN DEPARTMANI
+# ==========================================================================================
+
+DIET_GOALS = ["Kilo koruma", "Kas artışı", "Yağ azaltma", "Maç haftası", "Toparlanma"]
+DIET_GOAL_COLORS = {  # hedef: (yazı, zemin)
+    "Kilo koruma": ("#2FD69A", "#12291F"),
+    "Kas artışı": ("#7FB2FF", "#152238"),
+    "Yağ azaltma": ("#F2B24A", "#2A2113"),
+    "Maç haftası": ("#FF7B7F", "#2E1719"),
+    "Toparlanma": ("#B69CFF", "#221B38"),
+}
+MEAL_KINDS = ["Antrenman günü", "Maç günü", "Dinlenme günü"]
+MEAL_KIND_COLORS = {
+    "Antrenman günü": ("#2FD69A", "#12291F"),
+    "Maç günü": ("#F2B24A", "#2A2113"),
+    "Dinlenme günü": ("#7FB2FF", "#152238"),
+}
+MEAL_SLOTS = [("kahvalti", "Kahvaltı"), ("ara", "Ara öğün"), ("ogle", "Öğle"),
+              ("antrenman", "Antrenman sonrası"), ("aksam", "Akşam")]
+MEAL_TEMPLATES = {
+    "Antrenman günü": {"kahvalti": "Yulaf, yumurta, meyve, zeytin", "ara": "Yoğurt, muz, ceviz",
+                       "ogle": "Izgara tavuk, pilav, salata", "antrenman": "Süt, muz, protein barı",
+                       "aksam": "Balık, bulgur, buharda sebze"},
+    "Maç günü": {"kahvalti": "Yulaf, bal, muz, yumurta", "ara": "Kuru meyve, bal-ekmek",
+                 "ogle": "Makarna, tavuk, az yağlı sos", "antrenman": "İzotonik, muz, jel",
+                 "aksam": "Pilav, hindi, haşlanmış sebze"},
+    "Dinlenme günü": {"kahvalti": "Omlet, peynir, tam tahıl ekmek", "ara": "Meyve, badem",
+                      "ogle": "Mercimek çorbası, ızgara köfte, salata", "antrenman": "",
+                      "aksam": "Zeytinyağlı sebze, yoğurt"},
+}
+
+
+def goal_chip(name: str) -> QLabel:
+    fg, bg = DIET_GOAL_COLORS.get(name, (K_MUTED, "#1B2A22"))
+    return make_chip(name, fg, bg)
+
+
+def _fmt_num(value, digits: int = 1) -> str:
+    if value in (None, ""):
+        return "—"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{v:.{digits}f}".rstrip("0").rstrip(".") if digits else f"{v:.0f}"
+
+
+class TrendChart(QWidget):
+    """Basit çizgi grafik: ızgara, alan dolgusu, son noktada vurgulu değer. Renkler tema belirteçlerinden gelir."""
+
+    def __init__(self, color: str, parent=None):
+        super().__init__(parent)
+        self.color = QColor(color)
+        self.points: list = []     # [(etiket, değer)]
+        self.unit = ""
+        self.setMinimumHeight(220)
+
+    def set_data(self, points: list, unit: str = ""):
+        self.points = points
+        self.unit = unit
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        left, right, top, bottom = 48, 22, 16, 30
+        plot = QRectF(left, top, max(10, w - left - right), max(10, h - top - bottom))
+        muted, line_col = QColor(K_MUTED), QColor(K_LINE)
+        font = p.font()
+        font.setPointSize(10)
+        p.setFont(font)
+        pts = self.points
+        if len(pts) < 2:
+            p.setPen(muted)
+            p.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter),
+                       "Grafik için en az 2 ölçüm gerekli." if pts else "Henüz ölçüm yok.")
+            return
+        vals = [v for _, v in pts]
+        lo, hi = min(vals), max(vals)
+        pad = max((hi - lo) * 0.3, 0.6)
+        lo, hi = lo - pad, hi + pad
+        for i in range(5):
+            y = plot.top() + plot.height() * i / 4
+            p.setPen(QPen(line_col, 1))
+            p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+            p.setPen(muted)
+            p.drawText(QRectF(0, y - 10, left - 8, 20),
+                       int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), f"{hi - (hi - lo) * i / 4:.1f}")
+        n = len(pts)
+        xs = [plot.left() + plot.width() * i / (n - 1) for i in range(n)]
+        ys = [plot.bottom() - plot.height() * (v - lo) / (hi - lo) for v in vals]
+        path = QPainterPath()
+        path.moveTo(xs[0], ys[0])
+        for x, y in zip(xs[1:], ys[1:]):
+            path.lineTo(x, y)
+        area = QPainterPath(path)
+        area.lineTo(xs[-1], plot.bottom())
+        area.lineTo(xs[0], plot.bottom())
+        area.closeSubpath()
+        fill = QColor(self.color)
+        fill.setAlpha(44)
+        p.fillPath(area, fill)
+        p.setPen(QPen(self.color, 2.6))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self.color)
+        for x, y in zip(xs[:-1], ys[:-1]):
+            p.drawEllipse(QPointF(x, y), 3.2, 3.2)
+        p.drawEllipse(QPointF(xs[-1], ys[-1]), 6, 6)
+        p.setBrush(QColor(K_CARD))
+        p.drawEllipse(QPointF(xs[-1], ys[-1]), 2.6, 2.6)
+        # son değer etiketi
+        p.setPen(QColor(K_TEXT))
+        label = f"{vals[-1]:.1f}{self.unit}"
+        p.drawText(QRectF(xs[-1] - 70, ys[-1] - 30, 70, 20),
+                   int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), label)
+        # x ekseni: ilk, orta, son tarih
+        p.setPen(muted)
+        marks = sorted({0, n // 2, n - 1})
+        for i in marks:
+            x = xs[i]
+            if i == 0:
+                rect, align = QRectF(x, plot.bottom() + 6, 80, 18), Qt.AlignmentFlag.AlignLeft
+            elif i == n - 1:
+                rect, align = QRectF(x - 80, plot.bottom() + 6, 80, 18), Qt.AlignmentFlag.AlignRight
+            else:
+                rect, align = QRectF(x - 40, plot.bottom() + 6, 80, 18), Qt.AlignmentFlag.AlignHCenter
+            p.drawText(rect, int(align | Qt.AlignmentFlag.AlignVCenter), pts[i][0])
+
+
+class MacroBar(QWidget):
+    """Protein / karbonhidrat / yağ oranını tek şeritte gösterir."""
+
+    COLORS = ("#7FB2FF", "#F2B24A", "#FF7B7F")
+
+    def __init__(self, protein: float, carb: float, fat: float, parent=None):
+        super().__init__(parent)
+        self.vals = (max(protein, 0), max(carb, 0), max(fat, 0))
+        self.setFixedHeight(10)
+        self.setMinimumWidth(80)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(0, 0, self.width(), self.height())
+        clip = QPainterPath()
+        clip.addRoundedRect(rect, 5, 5)
+        p.setClipPath(clip)
+        p.fillRect(rect, QColor(K_LINE))
+        kcal = [self.vals[0] * 4, self.vals[1] * 4, self.vals[2] * 9]
+        total = sum(kcal)
+        if total <= 0:
+            return
+        x = 0.0
+        for k, color in zip(kcal, self.COLORS):
+            wd = rect.width() * k / total
+            p.fillRect(QRectF(x, 0, wd, rect.height()), QColor(color))
+            x += wd
+
+
+class BodyDialog(BaseDialog):
+    def __init__(self, name: str, rec: dict = None, last: dict = None, parent=None):
+        super().__init__(f"{name} — ölçüm", parent, width=500,
+                         hint="Boş bırakmak istediğin değeri 0 bırak; grafikte ve özetlerde görünmez.")
+        rec = rec or {}
+        last = last or {}
+        self.date_edit = make_date_edit(rec.get("date", ""))
+        self.add_field("Tarih", self.date_edit)
+
+        def spin(key, suffix, lo, hi, dec=1):
+            box = QDoubleSpinBox()
+            box.setDecimals(dec)
+            box.setRange(lo, hi)
+            box.setSingleStep(0.1)
+            box.setSuffix(suffix)
+            box.setValue(float(rec.get(key, last.get(key, 0)) or 0))
+            return box
+        self.weight = spin("weight", " kg", 0, 200)
+        self.fat = spin("fat", " %", 0, 60)
+        self.muscle = spin("muscle", " kg", 0, 120)
+        self.water = spin("water", " %", 0, 80)
+        self.add_field("Kilo", self.weight)
+        self.add_field("Yağ oranı", self.fat)
+        self.add_field("Kas kütlesi", self.muscle)
+        self.add_field("Vücut suyu", self.water)
+        self.note = QLineEdit(rec.get("note", ""))
+        self.note.setPlaceholderText("İsteğe bağlı (ör. sabah aç karnına)")
+        self.add_field("Not", self.note)
+        self.rec_id = rec.get("id") or new_id()
+
+    def validate(self) -> bool:
+        if self.weight.value() <= 0:
+            self.show_error("Kilo girmeden ölçüm kaydedilemez.")
+            return False
+        return True
+
+    def values(self) -> dict:
+        return {"id": self.rec_id, "date": date_edit_value(self.date_edit), "weight": round(self.weight.value(), 1),
+                "fat": round(self.fat.value(), 1) or None, "muscle": round(self.muscle.value(), 1) or None,
+                "water": round(self.water.value(), 1) or None, "note": self.note.text().strip()}
+
+
+class DietPlanDialog(BaseDialog):
+    def __init__(self, name: str, plan: dict = None, parent=None):
+        super().__init__(f"{name} — beslenme planı", parent, width=520,
+                         hint="Günlük hedefler. Makrolar gram cinsindendir; kalori otomatik de hesaplanır.")
+        plan = plan or {}
+        self.goal = QComboBox()
+        self.goal.addItems(DIET_GOALS)
+        if plan.get("goal") in DIET_GOALS:
+            self.goal.setCurrentText(plan["goal"])
+        self.add_field("Hedef", self.goal)
+
+        def ispin(value, suffix, hi):
+            box = QSpinBox()
+            box.setRange(0, hi)
+            box.setSuffix(suffix)
+            box.setValue(int(value or 0))
+            return box
+        self.protein = ispin(plan.get("protein"), " g", 500)
+        self.carb = ispin(plan.get("carb"), " g", 1000)
+        self.fat = ispin(plan.get("fat"), " g", 400)
+        self.kcal = ispin(plan.get("kcal"), " kcal", 8000)
+        self.add_field("Protein", self.protein)
+        self.add_field("Karbonhidrat", self.carb)
+        self.add_field("Yağ", self.fat)
+        self.add_field("Günlük kalori", self.kcal, "0 bırakırsan makrolardan hesaplanır.")
+        self.water = QDoubleSpinBox()
+        self.water.setDecimals(1)
+        self.water.setRange(0, 10)
+        self.water.setSingleStep(0.1)
+        self.water.setSuffix(" L")
+        self.water.setValue(float(plan.get("water") or 3.0))
+        self.add_field("Su hedefi", self.water)
+        self.note = QPlainTextEdit(plan.get("note", ""))
+        self.note.setFixedHeight(72)
+        self.add_field("Not", self.note)
+
+    def values(self) -> dict:
+        kcal = self.kcal.value() or round(self.protein.value() * 4 + self.carb.value() * 4 + self.fat.value() * 9)
+        return {"goal": self.goal.currentText(), "protein": self.protein.value(), "carb": self.carb.value(),
+                "fat": self.fat.value(), "kcal": kcal, "water": round(self.water.value(), 1),
+                "note": self.note.toPlainText().strip(), "updated": date.today().isoformat()}
+
+
+class AllergyDialog(BaseDialog):
+    def __init__(self, name: str, rec: dict = None, parent=None):
+        super().__init__(f"{name} — alerji ve kısıtlar", parent, width=500)
+        rec = rec or {}
+        self.allergy = QLineEdit(rec.get("allergy", ""))
+        self.allergy.setPlaceholderText("ör. fıstık, deniz ürünleri")
+        self.add_field("Alerji", self.allergy)
+        self.intol = QLineEdit(rec.get("intol", ""))
+        self.intol.setPlaceholderText("ör. laktoz, gluten")
+        self.add_field("İntolerans", self.intol)
+        self.avoid = QLineEdit(rec.get("avoid", ""))
+        self.avoid.setPlaceholderText("ör. domuz ürünleri, aşırı baharat")
+        self.add_field("Kaçınılacaklar", self.avoid)
+        self.note = QPlainTextEdit(rec.get("note", ""))
+        self.note.setFixedHeight(72)
+        self.add_field("Not", self.note)
+
+    def values(self) -> dict:
+        return {"allergy": self.allergy.text().strip(), "intol": self.intol.text().strip(),
+                "avoid": self.avoid.text().strip(), "note": self.note.toPlainText().strip()}
+
+
+class SupplementDialog(BaseDialog):
+    def __init__(self, name: str, item: dict = None, parent=None):
+        super().__init__(f"{name} — takviye", parent, width=480)
+        item = item or {}
+        self.name_edit = QComboBox()
+        self.name_edit.setEditable(True)
+        self.name_edit.addItems(["Kreatin", "D vitamini", "Magnezyum", "Omega-3", "Demir", "Protein tozu",
+                                 "BCAA", "Çinko", "C vitamini", "Elektrolit"])
+        self.name_edit.setCurrentText(item.get("name", ""))
+        self.add_field("Takviye", self.name_edit, "Listeden seçebilir ya da kendin yazabilirsin.")
+        self.dose = QLineEdit(item.get("dose", ""))
+        self.dose.setPlaceholderText("ör. 5 g, 1 tablet")
+        self.add_field("Doz", self.dose)
+        self.timing = QLineEdit(item.get("timing", ""))
+        self.timing.setPlaceholderText("ör. antrenman sonrası, yatmadan önce")
+        self.add_field("Zamanlama", self.timing)
+        self.item_id = item.get("id") or new_id()
+
+    def validate(self) -> bool:
+        if not self.name_edit.currentText().strip():
+            self.show_error("Takviye adı boş olamaz.")
+            return False
+        return True
+
+    def values(self) -> dict:
+        return {"id": self.item_id, "name": self.name_edit.currentText().strip(),
+                "dose": self.dose.text().strip(), "timing": self.timing.text().strip()}
+
+
+class MenuDialog(BaseDialog):
+    def __init__(self, day_iso: str, rec: dict = None, parent=None):
+        d = parse_iso(day_iso) or date.today()
+        super().__init__(f"{d.day} {TURKISH_MONTHS[d.month]} — günlük menü", parent, width=580)
+        rec = rec or {}
+        self.kind = SegmentedChoice(MEAL_KINDS, rec.get("kind", "Antrenman günü"))
+        self.add_field("Gün türü", self.kind)
+        self.edits = {}
+        slots = rec.get("slots") or {}
+        for key, label in MEAL_SLOTS:
+            edit = QLineEdit(slots.get(key, ""))
+            self.edits[key] = edit
+            self.add_field(label, edit)
+        fill = QPushButton("Şablonu doldur")
+        fill.setObjectName("outlineSmall")
+        fill.setFixedHeight(32)
+        fill.setToolTip("Seçili gün türünün örnek menüsünü boş alanlara yazar")
+        fill.clicked.connect(self._fill_template)
+        self.form.addWidget(fill, 0, Qt.AlignmentFlag.AlignLeft)
+        self.note = QLineEdit(rec.get("note", ""))
+        self.note.setPlaceholderText("İsteğe bağlı (ör. maçtan 3 saat önce yemek)")
+        self.add_field("Not", self.note)
+
+    def _fill_template(self):
+        tmpl = MEAL_TEMPLATES.get(self.kind.value(), {})
+        for key, edit in self.edits.items():
+            if not edit.text().strip():
+                edit.setText(tmpl.get(key, ""))
+
+    def values(self) -> dict:
+        return {"kind": self.kind.value(), "slots": {k: e.text().strip() for k, e in self.edits.items()},
+                "note": self.note.text().strip()}
+
+
+class DietWindow(DeptWindow):
+    KEY = "diyetisyen"
+    TITLE = "Diyetisyen"
+    LABEL = "DİYET"
+    NAV = [("panel", "Panel"), ("activity", "Ölçümler"), ("board", "Planlar"),
+           ("calendar", "Menü"), ("heart", "Alerji")]
+    META = [
+        ("Diyetisyen Paneli", "Takip, uyarılar ve bugünün menüsü"),
+        ("Vücut ölçümleri", "Kilo, yağ oranı ve kas kütlesi trendi"),
+        ("Beslenme planları", "Oyuncu bazında hedef, kalori ve makrolar"),
+        ("Haftalık menü", "Antrenman, maç ve dinlenme günü menüleri"),
+        ("Alerji ve takviyeler", "Kısıtlar, intoleranslar ve kullanılan takviyeler"),
+    ]
+
+    def init_state(self):
+        self.d = self.store.data
+        for key, default in (("body", {}), ("plans", {}), ("allergies", {}), ("supplements", {}), ("menus", {})):
+            self.d.setdefault(key, default)
+        self.sel_pid = ROSTER[0]["id"] if ROSTER else ""
+        self.week_offset = 0
+
+    def commit(self):
+        self.store.save()
+        self.on_page(self.stack.currentIndex())
+
+    def build_pages(self) -> list:
+        pages = []
+        for name in ("panel_box", "body_box", "plan_box", "menu_box", "allergy_box"):
+            page, box = self._refreshable_page()
+            setattr(self, name, box)
+            pages.append(page)
+        return pages
+
+    def on_page(self, index: int):
+        (self._refresh_panel, self._refresh_body, self._refresh_plans, self._refresh_menu,
+         self._refresh_allergy)[index]()
+
+    # --- yardımcılar -----------------------------------------------------------------------
+    def _records(self, pid: str) -> list:
+        return sorted(self.d["body"].get(pid, []), key=lambda r: r.get("date", ""))
+
+    def _last_record(self, pid: str):
+        recs = self._records(pid)
+        return recs[-1] if recs else None
+
+    def _availability(self) -> dict:
+        try:
+            return self.shared.load()["availability"] if self.shared is not None else {}
+        except Exception:
+            return {}
+
+    def _player_combo(self, on_change):
+        combo = make_player_combo(self.sel_pid)
+        combo.setMinimumWidth(280)
+        combo.currentIndexChanged.connect(lambda _=0, c=combo: on_change(c.currentData()))
+        return combo
+
+    # --- Panel -----------------------------------------------------------------------------
+    def _refresh_panel(self):
+        clear_layout(self.panel_box)
+        total = len(ROSTER)
+        planned = sum(1 for p in ROSTER if self.d["plans"].get(p["id"]))
+        today = date.today()
+        week_ago = (today - timedelta(days=7)).isoformat()
+        measured = sum(1 for p in ROSTER if (self._last_record(p["id"]) or {}).get("date", "") >= week_ago)
+        flagged = sum(1 for p in ROSTER if any(self.d["allergies"].get(p["id"], {}).get(k) for k in ("allergy", "intol")))
+        stale = [p for p in ROSTER if self._last_record(p["id"]) is None
+                 or (parse_iso(self._last_record(p["id"])["date"]) or today) < today - timedelta(days=14)]
+
+        kp = QHBoxLayout()
+        kp.setSpacing(16)
+        kp.addWidget(self._stat_card("Planı olan", str(planned), self.acc["hi"], f"/ {total}"))
+        kp.addWidget(self._stat_card("Bu hafta ölçülen", str(measured), "#7FB2FF", f"/ {total}"))
+        kp.addWidget(self._stat_card("Alerji / intolerans", str(flagged), "#F2B24A", "oyuncu"))
+        kp.addWidget(self._stat_card("Ölçüm bekleyen", str(len(stale)), "#FF7B7F", "14+ gün"))
+        self.panel_box.addLayout(kp)
+
+        main = QHBoxLayout()
+        main.setSpacing(20)
+
+        mcard, ml = self._card()
+        head = QHBoxLayout()
+        head.addWidget(self._section_label("Bugünün menüsü"))
+        head.addStretch(1)
+        edit = self._button("Düzenle", "outlineSmall", 32, "plus")
+        edit.clicked.connect(lambda: self._edit_menu(today.isoformat()))
+        head.addWidget(edit)
+        ml.addLayout(head)
+        menu = self.d["menus"].get(today.isoformat())
+        if not menu:
+            ml.addWidget(self._text("Bugün için menü girilmemiş. Düzenle'ye basıp şablondan başlayabilirsin."))
+        else:
+            fg, bg = MEAL_KIND_COLORS.get(menu.get("kind"), (K_MUTED, "#1B2A22"))
+            chips = QHBoxLayout()
+            chips.addWidget(make_chip(menu.get("kind", ""), fg, bg))
+            chips.addStretch(1)
+            ml.addLayout(chips)
+            for key, label in MEAL_SLOTS:
+                text = (menu.get("slots") or {}).get(key, "")
+                if not text:
+                    continue
+                row = QFrame()
+                row.setObjectName("rowLine")
+                h = QHBoxLayout(row)
+                h.setContentsMargins(0, 10, 0, 10)
+                h.setSpacing(14)
+                lab = QLabel(label)
+                lab.setObjectName("dateSub")
+                lab.setFixedWidth(130)
+                h.addWidget(lab)
+                val = QLabel(text)
+                val.setObjectName("cellText")
+                val.setWordWrap(True)
+                h.addWidget(val, 1)
+                ml.addWidget(row)
+            if menu.get("note"):
+                ml.addWidget(self._text(menu["note"], "dateSub"))
+        ml.addStretch(1)
+        main.addWidget(mcard, 1)
+
+        side_w = QWidget()
+        side_w.setFixedWidth(360)
+        side = QVBoxLayout(side_w)
+        side.setContentsMargins(0, 0, 0, 0)
+        side.setSpacing(16)
+
+        acard, al = self._card(spacing=10)
+        al.addWidget(self._section_label("Sağlık biriminden gelen durum"))
+        avail = self._availability()
+        attention = [(p, avail.get(p["id"], {})) for p in ROSTER
+                     if avail.get(p["id"], {}).get("status", "Hazır") != "Hazır"]
+        if not attention:
+            al.addWidget(self._text("Şu an sakat, kısıtlı ya da rehabilitasyondaki oyuncu yok."))
+        for p, a in attention[:6]:
+            row = QHBoxLayout()
+            row.addWidget(two_line(p["name"], "Kalori ve protein planını gözden geçir"), 1)
+            row.addWidget(status_chip(a.get("status", "")))
+            al.addLayout(row)
+        side.addWidget(acard)
+
+        scard, sl = self._card(spacing=10)
+        sl.addWidget(self._section_label("Ölçüm bekleyenler"))
+        if not stale:
+            sl.addWidget(self._text("Herkesin son 14 günde ölçümü var."))
+        for p in stale[:6]:
+            last = self._last_record(p["id"])
+            row = QHBoxLayout()
+            row.addWidget(two_line(p["name"], f"Son ölçüm: {short_date(last['date'])}" if last else "Hiç ölçüm yok"), 1)
+            btn = self._button("Ölç", "outlineSmall", 30)
+            btn.clicked.connect(lambda _=False, pid=p["id"]: self._add_body(pid))
+            row.addWidget(btn)
+            sl.addLayout(row)
+        side.addWidget(scard)
+        side.addStretch(1)
+        main.addWidget(side_w)
+        self.panel_box.addLayout(main, 1)
+
+    # --- Ölçümler --------------------------------------------------------------------------
+    def _set_pid(self, pid):
+        if pid:
+            self.sel_pid = pid
+            self._refresh_body()
+
+    def _refresh_body(self):
+        clear_layout(self.body_box)
+        top = QHBoxLayout()
+        top.setSpacing(12)
+        top.addWidget(self._player_combo(self._set_pid))
+        top.addStretch(1)
+        add = self._button("Ölçüm ekle", "aiBtn", 38, "plus", self.acc["on"])
+        add.clicked.connect(lambda: self._add_body(self.sel_pid))
+        top.addWidget(add)
+        self.body_box.addLayout(top)
+
+        recs = self._records(self.sel_pid)
+        last = recs[-1] if recs else None
+        first = recs[0] if recs else None
+        kp = QHBoxLayout()
+        kp.setSpacing(16)
+        delta = (last["weight"] - first["weight"]) if last and first and last is not first else None
+        kp.addWidget(self._stat_card("Son kilo", _fmt_num(last["weight"]) if last else "—", self.acc["hi"], "kg"))
+        kp.addWidget(self._stat_card("Başlangıca göre", ("%+.1f" % delta) if delta is not None else "—", "#F2B24A", "kg"))
+        kp.addWidget(self._stat_card("Yağ oranı", _fmt_num(last.get("fat")) if last else "—", "#FF7B7F", "%"))
+        kp.addWidget(self._stat_card("Kas kütlesi", _fmt_num(last.get("muscle")) if last else "—", "#7FB2FF", "kg"))
+        self.body_box.addLayout(kp)
+
+        card, lay = self._card()
+        head = QHBoxLayout()
+        head.addWidget(self._section_label("Kilo trendi"))
+        head.addStretch(1)
+        self._metric = getattr(self, "_metric", "weight")
+        seg = SegmentedChoice(["Kilo", "Yağ %", "Kas kg"],
+                              {"weight": "Kilo", "fat": "Yağ %", "muscle": "Kas kg"}[self._metric])
+        for label, btn in seg.buttons.items():
+            btn.clicked.connect(lambda _=False, l=label: self._set_metric(l))
+        head.addWidget(seg)
+        lay.addLayout(head)
+        key, unit = {"weight": ("weight", " kg"), "fat": ("fat", " %"), "muscle": ("muscle", " kg")}[self._metric]
+        chart = TrendChart(self.acc["hi"])
+        chart.set_data([(short_date(r["date"]), r[key]) for r in recs if r.get(key)], unit)
+        lay.addWidget(chart)
+        self.body_box.addWidget(card)
+
+        tcard, tl = self._card()
+        tl.addWidget(self._section_label("Ölçüm geçmişi"))
+        rows = []
+        prev = None
+        for r in recs:
+            change = "" if prev is None else "%+.1f kg" % (r["weight"] - prev["weight"])
+            rows.append(([long_date(r["date"]), f"{_fmt_num(r['weight'])} kg", change or "—",
+                          f"%{_fmt_num(r.get('fat'))}" if r.get("fat") else "—",
+                          f"{_fmt_num(r.get('muscle'))} kg" if r.get("muscle") else "—", r.get("note", "")], r["id"]))
+            prev = r
+        rows.reverse()
+        tl.addWidget(build_table([("Tarih", 150), ("Kilo", 90), ("Değişim", 90), ("Yağ", 80), ("Kas", 90), ("Not", 0)],
+                                 rows, self._edit_body, 46,
+                                 "Bu oyuncu için henüz ölçüm yok. Sağ üstten ölçüm ekle."))
+        self.body_box.addWidget(tcard)
+        self.body_box.addStretch(1)
+
+    def _set_metric(self, label: str):
+        self._metric = {"Kilo": "weight", "Yağ %": "fat", "Kas kg": "muscle"}[label]
+        self._refresh_body()
+
+    def _add_body(self, pid):
+        if not pid:
+            return
+        self.sel_pid = pid
+        dlg = BodyDialog(player_label(pid), None, self._last_record(pid), self)
+        if dlg.exec():
+            self.d["body"].setdefault(pid, []).append(dlg.values())
+            self.commit()
+
+    def _edit_body(self, rec_id: str):
+        recs = self.d["body"].get(self.sel_pid, [])
+        rec = next((r for r in recs if r["id"] == rec_id), None)
+        if rec is None:
+            return
+        dlg = BodyDialog(player_label(self.sel_pid), rec, None, self)
+        dlg.cancel_btn.setText("Vazgeç")
+        delete = QPushButton("Sil")
+        delete.setObjectName("dangerBtn")
+        delete.setFixedHeight(38)
+
+        def do_delete():
+            if self._confirm("Bu ölçüm silinsin mi?", "Ölçümü sil"):
+                recs.remove(rec)
+                dlg.reject()
+                self.commit()
+        delete.clicked.connect(do_delete)
+        dlg.root.itemAt(dlg.root.count() - 1).layout().insertWidget(0, delete)
+        if dlg.exec():
+            rec.update(dlg.values())
+            self.commit()
+
+    # --- Planlar ---------------------------------------------------------------------------
+    def _refresh_plans(self):
+        clear_layout(self.plan_box)
+        self.plan_box.addWidget(self._text(
+            "Satıra tıklayıp oyuncunun hedefini, kalori ve makrolarını düzenle. Çubuk protein (mavi), "
+            "karbonhidrat (sarı) ve yağ (kırmızı) dağılımını gösterir.", "noteText"))
+        card, lay = self._card()
+        rows = []
+        for p in ROSTER:
+            plan = self.d["plans"].get(p["id"])
+            sub = p["pos"] + (f" · {p['no']}" if p["no"] else "")
+            if plan:
+                bar = MacroBar(plan.get("protein", 0), plan.get("carb", 0), plan.get("fat", 0))
+                macros = f"P {plan.get('protein', 0)} · K {plan.get('carb', 0)} · Y {plan.get('fat', 0)} g"
+                cells = [two_line(p["name"], sub), goal_chip(plan.get("goal", "")),
+                         f"{plan.get('kcal', 0)} kcal", macros, bar,
+                         f"{_fmt_num(plan.get('water'))} L"]
+            else:
+                cells = [two_line(p["name"], sub), make_chip("Plan yok", K_MUTED, "#1B2A22"), "—", "—", QLabel(""), "—"]
+            rows.append((cells, p["id"]))
+        lay.addWidget(build_table([("Oyuncu", 0), ("Hedef", 130), ("Kalori", 100), ("Makrolar", 210),
+                                   ("Dağılım", 150), ("Su", 70)], rows, self._edit_plan, 58))
+        self.plan_box.addWidget(card)
+        self.plan_box.addStretch(1)
+
+    def _edit_plan(self, pid: str):
+        plan = self.d["plans"].get(pid)
+        dlg = DietPlanDialog(player_label(pid), plan, self)
+        if plan:
+            remove = QPushButton("Planı sil")
+            remove.setObjectName("dangerBtn")
+            remove.setFixedHeight(38)
+
+            def do_remove():
+                if self._confirm("Bu oyuncunun planı silinsin mi?", "Planı sil"):
+                    self.d["plans"].pop(pid, None)
+                    dlg.reject()
+                    self.commit()
+            remove.clicked.connect(do_remove)
+            dlg.root.itemAt(dlg.root.count() - 1).layout().insertWidget(0, remove)
+        if dlg.exec():
+            self.d["plans"][pid] = dlg.values()
+            self.commit()
+
+    # --- Menü ------------------------------------------------------------------------------
+    def _week_start(self) -> date:
+        today = date.today()
+        return today - timedelta(days=today.weekday()) + timedelta(weeks=self.week_offset)
+
+    def _refresh_menu(self):
+        clear_layout(self.menu_box)
+        start = self._week_start()
+        end = start + timedelta(days=6)
+        nav = QHBoxLayout()
+        nav.setSpacing(10)
+        prev_btn = self._button("‹ Önceki hafta", "outlineSmall", 34)
+        prev_btn.clicked.connect(lambda: self._shift_week(-1))
+        next_btn = self._button("Sonraki hafta ›", "outlineSmall", 34)
+        next_btn.clicked.connect(lambda: self._shift_week(1))
+        today_btn = self._button("Bu hafta", "outlineSmall", 34)
+        today_btn.clicked.connect(lambda: self._shift_week(0, reset=True))
+        title = QLabel(f"{start.day} {TURKISH_MONTHS[start.month]} – {end.day} {TURKISH_MONTHS[end.month]} {end.year}")
+        title.setObjectName("bigName")
+        nav.addWidget(prev_btn)
+        nav.addWidget(today_btn)
+        nav.addWidget(next_btn)
+        nav.addSpacing(10)
+        nav.addWidget(title)
+        nav.addStretch(1)
+        self.menu_box.addLayout(nav)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(14)
+        today = date.today()
+        for i in range(7):
+            day = start + timedelta(days=i)
+            iso = day.isoformat()
+            menu = self.d["menus"].get(iso)
+            card, lay = self._card(clickable=True, spacing=8)
+            card.clicked.connect(lambda iso=iso: self._edit_menu(iso))
+            head = QHBoxLayout()
+            name = QLabel(f"{DAYS_TR[day.weekday()]} · {day.day}")
+            name.setObjectName("fxOpp")
+            if day == today:
+                name.setStyleSheet(f"color: {self.acc['hi']};")
+            head.addWidget(name)
+            head.addStretch(1)
+            if menu:
+                fg, bg = MEAL_KIND_COLORS.get(menu.get("kind"), (K_MUTED, "#1B2A22"))
+                head.addWidget(make_chip(menu.get("kind", "").replace(" günü", ""), fg, bg))
+            lay.addLayout(head)
+            if not menu:
+                lay.addWidget(self._text("Menü yok. Eklemek için tıkla.", "dateSub"))
+            else:
+                for key, label in MEAL_SLOTS:
+                    text = (menu.get("slots") or {}).get(key, "")
+                    if text:
+                        lay.addWidget(self._meal_line(label, text))
+            lay.addStretch(1)
+            grid.addWidget(card, i // 4, i % 4)
+        for c in range(4):
+            grid.setColumnStretch(c, 1)
+        self.menu_box.addLayout(grid)
+        self.menu_box.addStretch(1)
+
+    def _meal_line(self, label: str, text: str) -> QWidget:
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        lab = QLabel(label)
+        lab.setObjectName("dateSub")
+        val = QLabel(text)
+        val.setObjectName("cellText")
+        val.setWordWrap(True)
+        col.addWidget(lab)
+        col.addWidget(val)
+        return box
+
+    def _shift_week(self, step: int, reset: bool = False):
+        self.week_offset = 0 if reset else self.week_offset + step
+        self._refresh_menu()
+
+    def _edit_menu(self, iso: str):
+        existing = self.d["menus"].get(iso)
+        dlg = MenuDialog(iso, existing, self)
+        if existing:
+            remove = QPushButton("Menüyü sil")
+            remove.setObjectName("dangerBtn")
+            remove.setFixedHeight(38)
+
+            def do_remove():
+                if self._confirm("Bu günün menüsü silinsin mi?", "Menüyü sil"):
+                    self.d["menus"].pop(iso, None)
+                    dlg.reject()
+                    self.commit()
+            remove.clicked.connect(do_remove)
+            dlg.root.itemAt(dlg.root.count() - 1).layout().insertWidget(0, remove)
+        if dlg.exec():
+            self.d["menus"][iso] = dlg.values()
+            self.commit()
+
+    # --- Alerji ve takviyeler --------------------------------------------------------------
+    def _refresh_allergy(self):
+        clear_layout(self.allergy_box)
+        self.allergy_box.addWidget(self._text(
+            "Alerji ve intolerans bilgisi yemek hazırlayan ekiple paylaşılmaz; yalnızca bu ekranda görünür. "
+            "Satıra tıklayıp düzenle.", "noteText"))
+        cols = QHBoxLayout()
+        cols.setSpacing(20)
+
+        acard, al = self._card()
+        al.addWidget(self._section_label("Alerji ve kısıtlar"))
+        rows = []
+        for p in ROSTER:
+            rec = self.d["allergies"].get(p["id"], {})
+            sub = p["pos"] + (f" · {p['no']}" if p["no"] else "")
+            allergy = rec.get("allergy", "")
+            chip = make_chip(allergy, "#FF7B7F", "#2E1719") if allergy else QLabel("—")
+            rows.append(([two_line(p["name"], sub), chip, rec.get("intol", "") or "—"], p["id"]))
+        al.addWidget(build_table([("Oyuncu", 0), ("Alerji", 170), ("İntolerans", 130)], rows, self._edit_allergy, 54))
+        cols.addWidget(acard, 1)
+
+        scard, sl = self._card()
+        head = QHBoxLayout()
+        head.addWidget(self._section_label("Takviyeler"))
+        head.addStretch(1)
+        add = self._button("Takviye ekle", "outlineSmall", 32, "plus")
+        add.clicked.connect(self._add_supplement)
+        head.addWidget(add)
+        sl.addLayout(head)
+        sl.addWidget(self._player_combo(self._set_pid_supp))
+        items = self.d["supplements"].get(self.sel_pid, [])
+        if not items:
+            sl.addWidget(self._text("Bu oyuncu için takviye kaydı yok."))
+        for it in items:
+            row = ClickableFrame()
+            row.setObjectName("rowLine")
+            row.setProperty("clickable", True)
+            row.setCursor(Qt.CursorShape.PointingHandCursor)
+            row.clicked.connect(lambda iid=it["id"]: self._edit_supplement(iid))
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 10, 0, 10)
+            h.addWidget(two_line(it["name"], " · ".join(x for x in (it.get("dose"), it.get("timing")) if x)), 1)
+            sl.addWidget(row)
+        sl.addStretch(1)
+        cols.addWidget(scard, 1)
+        self.allergy_box.addLayout(cols, 1)
+
+    def _set_pid_supp(self, pid):
+        if pid:
+            self.sel_pid = pid
+            self._refresh_allergy()
+
+    def _edit_allergy(self, pid: str):
+        dlg = AllergyDialog(player_label(pid), self.d["allergies"].get(pid), self)
+        if dlg.exec():
+            vals = dlg.values()
+            if any(vals.values()):
+                self.d["allergies"][pid] = vals
+            else:
+                self.d["allergies"].pop(pid, None)
+            self.commit()
+
+    def _add_supplement(self):
+        if not self.sel_pid:
+            return
+        dlg = SupplementDialog(player_label(self.sel_pid), None, self)
+        if dlg.exec():
+            self.d["supplements"].setdefault(self.sel_pid, []).append(dlg.values())
+            self.commit()
+
+    def _edit_supplement(self, item_id: str):
+        items = self.d["supplements"].get(self.sel_pid, [])
+        item = next((i for i in items if i["id"] == item_id), None)
+        if item is None:
+            return
+        dlg = SupplementDialog(player_label(self.sel_pid), item, self)
+        remove = QPushButton("Sil")
+        remove.setObjectName("dangerBtn")
+        remove.setFixedHeight(38)
+
+        def do_remove():
+            if self._confirm("Bu takviye silinsin mi?", "Takviyeyi sil"):
+                items.remove(item)
+                dlg.reject()
+                self.commit()
+        remove.clicked.connect(do_remove)
+        dlg.root.itemAt(dlg.root.count() - 1).layout().insertWidget(0, remove)
+        if dlg.exec():
+            item.update(dlg.values())
+            self.commit()
+
+
+# ==========================================================================================
 # FUTBOLCU (kişisel görünüm — yalnızca paylaşılan asgari bilgiyi okur)
 # ==========================================================================================
 
@@ -8547,13 +9379,15 @@ class PlayerWindow(DeptWindow):
 # GİRİŞ EKRANI (departman seçimi) + UYGULAMA DENETLEYİCİSİ
 # ==========================================================================================
 
-DEPT_TITLES = {"medya": "Medya", "saglik": "Sağlık", "idari": "İdari", "teknik": "Teknik kadro", "futbolcu": "Futbolcu"}
+DEPT_TITLES = {"medya": "Medya", "saglik": "Sağlık", "idari": "İdari", "teknik": "Teknik kadro",
+               "diyetisyen": "Diyetisyen", "futbolcu": "Futbolcu"}
 
 DEPT_CARDS = [
     ("medya", "image", "Foto ayıklama, maç takvimi, doğum günleri ve içerik fikirleri.", ""),
     ("saglik", "heart", "Sakatlık ve rehabilitasyon takibi, testler ve randevular.", "PIN ile korunur"),
     ("idari", "briefcase", "Sözleşme ve lisans tarihleri, seyahat planı, belgeler.", "PIN ile korunur"),
     ("teknik", "board", "Antrenman planı, maç hazırlığı ve oyuncu değerlendirme.", "PIN ile korunur"),
+    ("diyetisyen", "leaf", "Beslenme planı, vücut ölçümleri, menü, alerji ve takviyeler.", "PIN ile korunur"),
     ("futbolcu", "person", "Kişisel program, kendi sağlık özeti ve duyurular.", "Kişisel PIN"),
 ]
 
@@ -8898,7 +9732,7 @@ class AppController(QObject):
                 store = self._unlock_store(key)
                 if store is None:
                     return False
-                cls = {"saglik": HealthWindow, "idari": AdminWindow, "teknik": StaffWindow}[key]
+                cls = {"saglik": HealthWindow, "idari": AdminWindow, "teknik": StaffWindow, "diyetisyen": DietWindow}[key]
                 window = cls(store, self.shared, None, self.pins)
                 if key == "saglik":
                     window.publish_availability()
