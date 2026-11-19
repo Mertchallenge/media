@@ -98,6 +98,7 @@ from datetime import datetime, date, timedelta
 #   ~/MediaStaffKS_crash.log        -> native çökme izi (faulthandler)
 #   ~/MediaStaffKS_son_foto.txt     -> işlenmeye BAŞLANAN son fotoğraf (çökerse suçlu budur)
 import faulthandler
+import gc
 CRASH_LOG_PATH = os.path.join(os.path.expanduser("~"), "MediaStaffKS_crash.log")
 LAST_PHOTO_PATH = os.path.join(os.path.expanduser("~"), "MediaStaffKS_son_foto.txt")
 try:
@@ -191,6 +192,8 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 # Denenecek model paketleri, öncelik sırasıyla (ilk başarılı olan kullanılır).
 MODEL_PACK_PRIORITY = ["antelopev2", "buffalo_l", "buffalo_s"]
 DETECTION_SIZE = (960, 960)          # Küçük/uzak yüzleri yakalamak için büyük tespit çözünürlüğü
+MAX_DETECT_SIDE = 2400               # Tam çözünürlüklü (6000px+) kareler bu uzun kenara indirilir (bellek koruması)
+MAX_UPSCALE_SIDE = 3600              # Büyütülmüş deneme görüntüsü bu uzun kenarı aşmaz (RAM patlamasını önler)
 ADAPTIVE_UPSCALE_STEPS = [1.6, 2.4]  # Yüz bulunamazsa sırayla denenecek büyütme katsayıları
 DETECTION_CONFIDENCE_THRESHOLD = 0.30  # Varsayılan ~0.5'ten düşürüldü: yan açı / zor ışık
                                         # koşullarındaki yüzleri gözden kaçırmamak için tespit
@@ -647,6 +650,10 @@ def detect_faces_adaptive(face_app, img):
     Döner: (faces, kullanılan_görüntü) — kullanılan_görüntü, embedding çıkarımı için de
     aynı (hizalı) görüntünün kullanılmasını sağlar.
     """
+    h0, w0 = img.shape[:2]
+    if max(h0, w0) > MAX_DETECT_SIDE:
+        k = MAX_DETECT_SIDE / float(max(h0, w0))
+        img = cv2.resize(img, (max(1, int(w0 * k)), max(1, int(h0 * k))), interpolation=cv2.INTER_AREA)
     enhanced = enhance_image_for_detection(img)
 
     faces = face_app.get(enhanced)
@@ -655,6 +662,8 @@ def detect_faces_adaptive(face_app, img):
 
     h, w = enhanced.shape[:2]
     for scale in ADAPTIVE_UPSCALE_STEPS:
+        if max(h, w) * scale > MAX_UPSCALE_SIDE:
+            continue
         upscaled = cv2.resize(enhanced, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
         faces = face_app.get(upscaled)
         if faces:
@@ -890,6 +899,8 @@ class ExtractionWorker(QThread):
 
                 filename = os.path.basename(path)
                 _remember_photo(path, i, stats["toplam"])
+                if i % 25 == 0:
+                    gc.collect()  # uzun koşularda bellek birikimini temizle
                 try:
                     img = imread_unicode(path)
                     if img is None:
