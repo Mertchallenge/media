@@ -6019,7 +6019,6 @@ class MainWindow(QMainWindow):
             return
         universe = self._share_universe()
         ov = share_overview(log, universe, date.today())
-        st = share_stats(log, universe, date.today())
         last = log[0]
 
         def day_text(iso: str, with_wd: bool = False) -> str:
@@ -6029,7 +6028,7 @@ class MainWindow(QMainWindow):
             except ValueError:
                 return iso
 
-        # ---- Sol: son paylaşılan oyuncu yüzleri + önceki paylaşımlar
+        # ---- Sol: son paylaşılan oyuncu yüzleri
         cap = QLabel(f"Son paylaşım · {day_text(last['date'])} · {len(last['players'])} oyuncu")
         cap.setObjectName("rowTitle")
         self.track_faces.addWidget(cap)
@@ -6048,29 +6047,9 @@ class MainWindow(QMainWindow):
             holder.setFixedWidth(70)
             grid.addWidget(holder, i // 4, i % 4)
         self.track_faces.addLayout(grid)
-        prev = log[1:4]
-        if prev:
-            self.track_faces.addSpacing(6)
-            cap3 = QLabel("Önceki paylaşımlar")
-            cap3.setObjectName("rowTitle")
-            self.track_faces.addWidget(cap3)
-            for e in prev:
-                row = QFrame()
-                row.setObjectName("rowLine")
-                row.setFixedHeight(34)
-                r = QHBoxLayout(row)
-                r.setContentsMargins(0, 0, 0, 0)
-                lab = QLabel(day_text(e["date"], True))
-                lab.setObjectName("bdName")
-                cnt = QLabel(f"{len(e['players'])} oyuncu")
-                cnt.setObjectName("dateSub")
-                r.addWidget(lab)
-                r.addStretch(1)
-                r.addWidget(cnt)
-                self.track_faces.addWidget(row)
         self.track_faces.addStretch(1)
 
-        # ---- Sağ: sırası gelenler + en çok paylaşılanlar
+        # ---- Sağ: sırası gelenler (istatistik/geçmiş yalnız "Geçmiş ve istatistik ›" ile açılır)
         cap2 = QLabel("Sırası gelenler")
         cap2.setObjectName("rowTitle")
         self.track_side.addWidget(cap2)
@@ -6091,34 +6070,6 @@ class MainWindow(QMainWindow):
                 chip = make_chip(f"{days} gün önce", K_MUTED, "#1B2A22")
             rl.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
             self.track_side.addWidget(row)
-        top_rows = [r for r in st["rows"] if r[1] > 0][:4]
-        if top_rows:
-            self.track_side.addSpacing(14)
-            cap4 = QLabel(f"En çok paylaşılanlar · {st['entries']} paylaşım")
-            cap4.setObjectName("rowTitle")
-            self.track_side.addWidget(cap4)
-            self.track_side.addSpacing(6)
-            top_n = top_rows[0][1] or 1
-            for n, c, _last in top_rows:
-                row = QFrame()
-                row.setObjectName("rowLine")
-                row.setFixedHeight(34)
-                r = QHBoxLayout(row)
-                r.setContentsMargins(0, 0, 0, 0)
-                r.setSpacing(10)
-                nm = ElidedLabel(n)
-                nm.setObjectName("bdName")
-                r.addWidget(nm, 1)
-                bar = HBar(c / top_n, K_GREEN)
-                bar.setMinimumWidth(0)
-                bar.setFixedWidth(90)
-                r.addWidget(bar)
-                cnt = QLabel(str(c))
-                cnt.setObjectName("dateSub")
-                cnt.setFixedWidth(22)
-                cnt.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                r.addWidget(cnt)
-                self.track_side.addWidget(row)
         self.track_side.addStretch(1)
 
     def _refresh_club_cards(self):
