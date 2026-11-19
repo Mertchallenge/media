@@ -2225,17 +2225,18 @@ class ProgressRing(QWidget):
 class BrandMark(QWidget):
     """Kocaelispor amblemi; dosya bulunamazsa yeşil/siyah çapraz şeritli yedek işarete düşer."""
 
-    def __init__(self, color: str = None, parent=None):
+    def __init__(self, color: str = None, parent=None, size: int = 44):
         super().__init__(parent)
         self._color = color or K_GREEN
-        self.setFixedSize(44, 44)
+        self._size = size
+        self.setFixedSize(size, size)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(0.5, 0.5, 43, 43)
 
-        logo = get_club_logo_pixmap(44)
+        logo = get_club_logo_pixmap(self._size)
         if logo is not None:
             x = (self.width() - logo.width()) / 2
             y = (self.height() - logo.height()) / 2
@@ -8504,8 +8505,8 @@ class LauncherWindow(UiKit, QMainWindow):
         outer.setSpacing(0)
 
         header = QHBoxLayout()
-        header.addWidget(BrandMark())
-        header.addSpacing(14)
+        header.addWidget(BrandMark(size=72))
+        header.addSpacing(16)
         brand = QVBoxLayout()
         brand.setSpacing(4)
         title = QLabel("MediaStaffKS")
