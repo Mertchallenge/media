@@ -1,10 +1,13 @@
 // Widget'ı taşıyan küçük ana uygulama.
 //  - Widget'a tıklanınca macOS bu uygulamayı açar → burada MediaStaffKS.app'i açıp kendini kapatır.
+//  - "--reload" ile açılırsa widget'ları hemen yeniletip kapanır (ana uygulama veriyi yazınca çağırır).
 //  - Kurulum sırasında "--setup" ile açılırsa yalnızca kısa bir bilgi penceresi gösterir.
 import AppKit
+import WidgetKit
 
 final class HostDelegate: NSObject, NSApplicationDelegate {
     let setupMode = CommandLine.arguments.contains("--setup")
+    let reloadMode = CommandLine.arguments.contains("--reload")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if setupMode {
@@ -17,6 +20,11 @@ final class HostDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "Tamam")
             alert.runModal()
             NSApp.terminate(nil)
+            return
+        }
+        if reloadMode {
+            WidgetCenter.shared.reloadAllTimelines()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { NSApp.terminate(nil) }
             return
         }
         openMainApp()

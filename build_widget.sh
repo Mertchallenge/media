@@ -116,6 +116,9 @@ else
   echo "UYARI: widget henüz kayıtlı görünmüyor. Uygulama açılınca kaydolabilir; olmazsa Mac'i yeniden başlat ve widget listesine tekrar bak."
 fi
 
+# Ana uygulamaya "widget'ı hemen yenileyebilirsin (--reload)" işareti bırak
+mkdir -p "$HOME/Library/Application Support/MediaStaffKS/widget" && : > "$HOME/Library/Application Support/MediaStaffKS/widget/reload_ok"
+
 say "Bitti!"
 echo "  Uygulama: $INSTALLED (şimdi açılacak, bir bilgi penceresi çıkacak → Tamam)"
 echo "  Sonra: masaüstüne sağ tık → Widget'ları Düzenle → 'MediaStaffKS' → istediğin widget'ı sürükle."

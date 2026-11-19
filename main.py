@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "iPhone widget'ları: Scriptable ile Bugünün/Haftalık program, Paylaşım takibi, Sıradaki maç, Doğum günleri (iCloud ile otomatik eşitlenir)."
+UPDATE_NOTES = "Paylaşım kaydı/değişikliği Mac widget'larına hemen yansır (widget'ı yeniden kurmak gerekir: build_widget.sh)."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -6434,6 +6434,7 @@ class MainWindow(QMainWindow):
                 json.dump(data, fh, ensure_ascii=False)
             os.replace(tmp, os.path.join(folder, "share.json"))
             self._ios_sync()
+            self._reload_mac_widgets()
         except Exception:  # noqa: BLE001
             pass
 
@@ -6538,6 +6539,25 @@ class MainWindow(QMainWindow):
                 json.dump(data, fh, ensure_ascii=False)
             os.replace(tmp, os.path.join(folder, "extra.json"))
             self._ios_sync()
+            self._reload_mac_widgets()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _reload_mac_widgets(self):
+        """Mac widget'larını hemen yeniletir (widget uygulamasını "--reload" ile arka planda çalıştırır).
+        Eski kurulumda (reload desteği yok) uygulama ana uygulamayı açmaya çalışır; bu yüzden yalnızca
+        widget sürümü 2 ve üstüyse çağrılır. En fazla 20 sn'de bir."""
+        try:
+            now = time.time()
+            if now - getattr(self, "_widget_reload_ts", 0) < 20:
+                return
+            marker = os.path.join(str(ks_data.user_data_dir()), "widget", "reload_ok")
+            host = "/Applications/MediaStaffKS-Widget.app"
+            if not (os.path.isdir(host) and os.path.exists(marker)):
+                return
+            self._widget_reload_ts = now
+            subprocess.Popen(["/usr/bin/open", "-g", "-j", host, "--args", "--reload"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:  # noqa: BLE001
             pass
 

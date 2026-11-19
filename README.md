@@ -99,6 +99,8 @@ Masaüstüne eklenen gerçek widget'lar (WidgetKit): **Paylaşım takibi**, **Bu
 Sonra masaüstüne sağ tık → *Widget'ları Düzenle* → **MediaStaffKS** → istediğin widget.
 Widget'lar kendi başlarına tazelenir (program satırı tam saatinde, diğerleri 15–60 dakikada bir);
 yeni veri için MediaStaffKS'ı açman yeterli.
+`build_widget.sh`'i v1.5.1 sonrası bir kez çalıştırdıysan, uygulamada bir paylaşım kaydettiğinde widget'lar hemen yenilenir
+(widget uygulaması arka planda `--reload` ile çalışır).
 
 
 ## iPhone widget'ları (Scriptable)
