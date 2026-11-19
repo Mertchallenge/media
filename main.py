@@ -124,7 +124,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QPalette, QColor, QDesktopServices, QPainter, QPen, QPainterPath, QPolygonF,
-    QPixmap, QIcon, QFontDatabase, QDragEnterEvent, QDropEvent
+    QPixmap, QIcon, QFontDatabase, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
 )
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -2119,6 +2119,14 @@ class ClickableFrame(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
+
+    def keyPressEvent(self, event):
+        # Odaklanabilen kartlarda Enter / Boşluk tıklama sayılır (klavyeyle gezinme).
+        if self.focusPolicy() != Qt.FocusPolicy.NoFocus and event.key() in (
+                Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.clicked.emit()
+            return
+        super().keyPressEvent(event)
 
 
 class ElidedLabel(QLabel):
@@ -4597,6 +4605,7 @@ QFrame#tile {{
     border-radius: 22px;
 }}
 QFrame#tile:hover {{ background-color: #131C17; border: 1px solid #2F4A3C; }}
+QFrame#tile:focus {{ background-color: #131C17; border: 1px solid {K_GREEN_HI}; }}
 QFrame#barTrack {{ background-color: {K_LINE}; border-radius: 3px; }}
 QPushButton#dangerBtn {{
     background-color: transparent;
@@ -8531,6 +8540,9 @@ class LauncherWindow(UiKit, QMainWindow):
         body.addStretch(1)
         heading = QVBoxLayout()
         heading.setSpacing(12)
+        self.greet_label = QLabel(self._greeting())
+        self.greet_label.setStyleSheet(f"color: {K_GREEN_HI}; font-size: 15px; font-weight: 600;")
+        heading.addWidget(self.greet_label)
         h1 = QLabel("Hangi departmanla devam ediyorsun?")
         h1.setStyleSheet(f"font-family: {FONT_DISPLAY}; font-size: 40px; font-weight: 700;")
         h2 = QLabel("Her departmanın kendi ekranı ve yetkisi var. Sağlık ve idari veriler yalnızca o departmanın "
@@ -8543,8 +8555,19 @@ class LauncherWindow(UiKit, QMainWindow):
 
         grid = QHBoxLayout()
         grid.setSpacing(16)
-        for key, icon, desc, lock in DEPT_CARDS:
-            grid.addWidget(self._tile(key, icon, desc, lock))
+        self._tiles = {}
+        self._last_slots = {}
+        prev = None
+        for n, (key, icon, desc, lock) in enumerate(DEPT_CARDS, start=1):
+            tile = self._tile(key, icon, desc, lock, n)
+            self._tiles[key] = tile
+            grid.addWidget(tile)
+            # 1–5 tuşlarıyla hızlı giriş
+            sc = QShortcut(QKeySequence(str(n)), self)
+            sc.activated.connect(lambda k=key: self.department_chosen.emit(k))
+            if prev is not None:
+                QWidget.setTabOrder(prev, tile)
+            prev = tile
         body.addLayout(grid)
         body.addStretch(1)
         outer.addWidget(self._scroll_wrap(body), 1)
@@ -8555,6 +8578,8 @@ class LauncherWindow(UiKit, QMainWindow):
         footer.addSpacing(10)
         footer.addWidget(self._text("Sonraki açılışta bu seçimi hatırla", "cellText", False))
         footer.addStretch(1)
+        footer.addWidget(self._text("1–5 tuşlarıyla hızlı giriş  ·  Tab / Enter ile de seçebilirsin", "dateSub", False))
+        footer.addSpacing(24)
         footer.addWidget(self._icon_label("shield", K_DIM, 16))
         footer.addWidget(self._text("Departman verileri bu bilgisayarda saklanır, diğer departmanlar göremez.",
                                     "dateSub", False))
@@ -8565,12 +8590,35 @@ class LauncherWindow(UiKit, QMainWindow):
         inner.setLayout(layout)
         return self._scroll(inner)
 
-    def _tile(self, key: str, icon: str, desc: str, lock: str) -> QFrame:
+    @staticmethod
+    def _greeting() -> str:
+        hour = datetime.now().hour
+        if hour < 5:
+            return "İyi geceler"
+        if hour < 12:
+            return "Günaydın"
+        if hour < 18:
+            return "İyi günler"
+        return "İyi akşamlar"
+
+    def set_last(self, key: str):
+        """Son kullanılan departmanın kartına 'Son kullanılan' etiketi koyar."""
+        for k, slot in self._last_slots.items():
+            while slot.count():
+                item = slot.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.deleteLater()
+            if k == key:
+                slot.addWidget(make_chip("Son kullanılan", K_GREEN_HI, "#16201B"))
+
+    def _tile(self, key: str, icon: str, desc: str, lock: str, number: int = 0) -> QFrame:
         accent = ACCENTS[key]
         tile = ClickableFrame()
         tile.setObjectName("tile")
         tile.setMinimumHeight(330)
         tile.setCursor(Qt.CursorShape.PointingHandCursor)
+        tile.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         tile.clicked.connect(lambda k=key: self.department_chosen.emit(k))
         lay = QVBoxLayout(tile)
         lay.setContentsMargins(24, 24, 24, 24)
@@ -8585,7 +8633,20 @@ class LauncherWindow(UiKit, QMainWindow):
         if pix is not None:
             box.setPixmap(pix)
         top.addWidget(box)
+        top.addSpacing(10)
+        last_slot = QHBoxLayout()
+        last_slot.setContentsMargins(0, 0, 0, 0)
+        self._last_slots[key] = last_slot
+        top.addLayout(last_slot)
         top.addStretch(1)
+        if number:
+            badge = QLabel(str(number))
+            badge.setFixedSize(28, 28)
+            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            badge.setStyleSheet(f"color: {K_MUTED}; border: 1px solid {K_LINE}; border-radius: 8px; "
+                                f"font-size: 13px; font-weight: 600;")
+            badge.setToolTip(f"{number} tuşuna basarak da açabilirsin")
+            top.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(top)
         lay.addSpacing(22)
 
@@ -8634,6 +8695,8 @@ class AppController(QObject):
         cfg = load_config()
         key = cfg.get("last_dept", "")
         self.launcher.set_remember(bool(cfg.get("remember_dept")))
+        if key in DEPARTMENTS:
+            self.launcher.set_last(key)
         QTimer.singleShot(1500, lambda: start_update_check(self.launcher))
         if cfg.get("remember_dept") and key in DEPARTMENTS and self.open_department(key):
             return
