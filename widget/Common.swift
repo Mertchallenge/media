@@ -1,5 +1,6 @@
 // MediaStaffKS widget'ları — ortak veri modelleri, okuyucular, renkler ve yardımcılar.
 import SwiftUI
+import WidgetKit
 import AppKit
 
 // MARK: - Paylaşım takibi verisi (share.json)
