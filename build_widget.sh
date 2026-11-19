@@ -21,6 +21,7 @@ TARGET="${ARCH}-apple-macos14.0"
 APP="dist/MediaStaffKS-Widget.app"
 APPEX="$APP/Contents/PlugIns/ShareWidget.appex"
 BASE_ID="tr.kocaelispor.mediastaffks.widget"
+BUILD_NO="$(date +%Y%m%d%H%M%S)"   # her derlemede yeni numara: macOS widget listesini yeniden okusun
 
 say "Paket klasörleri hazırlanıyor ($TARGET)"
 rm -rf "$APP"
@@ -48,7 +49,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key><string>icon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleVersion</key><string>${BUILD_NO}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -65,7 +66,7 @@ cat > "$APPEX/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>MediaStaffKS</string>
   <key>CFBundlePackageType</key><string>XPC!</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleVersion</key><string>${BUILD_NO}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSExtension</key><dict>
@@ -94,20 +95,28 @@ rm -f "$ENT"
 say "Kuruluyor"
 TARGET_DIR="/Applications"
 [ -w "$TARGET_DIR" ] || { TARGET_DIR="$HOME/Applications"; mkdir -p "$TARGET_DIR"; }
-rm -rf "$TARGET_DIR/MediaStaffKS-Widget.app"
-ditto "$APP" "$TARGET_DIR/MediaStaffKS-Widget.app"
-xattr -cr "$TARGET_DIR/MediaStaffKS-Widget.app" 2>/dev/null || true
-pluginkit -a "$TARGET_DIR/MediaStaffKS-Widget.app/Contents/PlugIns/ShareWidget.appex" 2>/dev/null || true
+INSTALLED="$TARGET_DIR/MediaStaffKS-Widget.app"
+LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+# eski kaydı temizle
+pluginkit -r "$INSTALLED/Contents/PlugIns/ShareWidget.appex" 2>/dev/null || true
+rm -rf "$INSTALLED"
+ditto "$APP" "$INSTALLED"
+xattr -cr "$INSTALLED" 2>/dev/null || true
+"$LSREG" -f -R -trusted "$INSTALLED" 2>/dev/null || true
+pluginkit -a "$INSTALLED/Contents/PlugIns/ShareWidget.appex" 2>/dev/null || true
+pluginkit -e use -i "${BASE_ID}.sharewidget" 2>/dev/null || true
 killall chronod 2>/dev/null || true
+killall NotificationCenter 2>/dev/null || true
+sleep 3
 
 say "Kayıt denetimi"
 if pluginkit -m -p com.apple.widgetkit-extension 2>/dev/null | grep -qi mediastaffks; then
-  echo "Widget macOS'a kaydedildi."
+  echo "Widget macOS'a kaydedildi (sürüm $BUILD_NO)."
 else
-  echo "UYARI: widget henüz kayıtlı görünmüyor. Uygulamayı bir kez açınca kaydolabilir; olmazsa bu çıktıyı bana gönder."
+  echo "UYARI: widget henüz kayıtlı görünmüyor. Uygulama açılınca kaydolabilir; olmazsa Mac'i yeniden başlat ve widget listesine tekrar bak."
 fi
 
 say "Bitti!"
-echo "  Uygulama: $TARGET_DIR/MediaStaffKS-Widget.app (şimdi açılacak, bir uyarı çıkacak → Tamam)"
+echo "  Uygulama: $INSTALLED (şimdi açılacak, bir uyarı çıkacak → Tamam)"
 echo "  Sonra: masaüstüne sağ tık → Widget'ları Düzenle → 'MediaStaffKS' → istediğin widget'ı sürükle."
-open "$TARGET_DIR/MediaStaffKS-Widget.app"
+open "$INSTALLED"

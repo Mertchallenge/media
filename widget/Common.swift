@@ -174,6 +174,19 @@ func countdownText(_ days: Int) -> String {
 
 // MARK: - Ortak görünümler
 
+/// Masaüstü widget'ları "vurgulu/renksiz" moda geçince fotoğraflar tek renkli silüete dönüşür; tam renkte kalmasını sağlar.
+@ViewBuilder func fullColor(_ img: Image) -> some View {
+    #if compiler(>=6.0)
+    if #available(macOS 15.0, *) {
+        img.widgetAccentedRenderingMode(.fullColor)
+    } else {
+        img
+    }
+    #else
+    img
+    #endif
+}
+
 struct ImageB64: View {
     let b64: String
     let fallback: String
@@ -188,7 +201,7 @@ struct ImageB64: View {
 
     @ViewBuilder var content: some View {
         if !b64.isEmpty, let data = Data(base64Encoded: b64), let img = NSImage(data: data) {
-            Image(nsImage: img).resizable().scaledToFill()
+            fullColor(Image(nsImage: img).resizable()).scaledToFill()
         } else {
             ZStack {
                 kGreen.opacity(0.35)
