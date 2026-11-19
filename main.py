@@ -136,11 +136,12 @@ from PyQt6.QtWidgets import (
 )
 try:  # İsteğe bağlı (Instagram önizlemesi): pip install PyQt6-WebEngine — QApplication'dan ÖNCE içe aktarılmalı
     from PyQt6.QtWebEngineWidgets import QWebEngineView
-    from PyQt6.QtWebEngineCore import QWebEnginePage
+    from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
     HAS_WEBENGINE = True
 except Exception:
     QWebEngineView = None
     QWebEnginePage = None
+    QWebEngineScript = None
     HAS_WEBENGINE = False
 
 
@@ -3789,8 +3790,24 @@ class InstagramPanel(QWidget):
             self.host.addWidget(box)
             return
         view = QWebEngineView()
-        view.setPage(InstagramPage(view))
-        view.page().setBackgroundColor(QColor(K_CARD))
+        view.setFixedHeight(400)
+        page = InstagramPage(view)
+        view.setPage(page)
+        page.setBackgroundColor(QColor(K_CARD))
+        # Instagram'ın beyaz sayfasını uygulamanın koyu temasına uydur: sayfayı ters çevir, fotoğrafları geri çevir.
+        inv = "#%02X%02X%02X" % tuple(255 - v for v in (QColor(K_CARD).red(), QColor(K_CARD).green(), QColor(K_CARD).blue()))
+        css = (f"html{{background:{inv}!important;filter:invert(1) hue-rotate(180deg)!important;}}"
+               "body{background:transparent!important;}"
+               "img,video,canvas,[style*='background-image']{filter:invert(1) hue-rotate(180deg)!important;}")
+        js = ("(function(){var s=document.createElement('style');s.textContent=%s;"
+              "(document.head||document.documentElement).appendChild(s);})();" % json.dumps(css))
+        script = QWebEngineScript()
+        script.setName("ks_dark")
+        script.setSourceCode(js)
+        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+        script.setRunsOnSubFrames(True)
+        page.scripts().insert(script)
         view.setUrl(QUrl(f"https://www.instagram.com/{self._handle_text()}/embed/"))
         self.host.addWidget(view)
         self._view = view
@@ -4978,7 +4995,6 @@ class MainWindow(QMainWindow):
         self.page_title.setText(title)
         self.page_sub.setText(sub)
         if index == PAGE_HOME:
-            self._refresh_home_tiles()
             self.ig_panel.ensure()
         elif index == PAGE_REVIEW:
             self.review_page.on_show()
@@ -5005,8 +5021,14 @@ class MainWindow(QMainWindow):
         row.setSpacing(20)
         row.addWidget(self._scroll(self._build_home_main()), 1)
         self.ig_panel = InstagramPanel(self)
-        self.ig_panel.setFixedWidth(410)
-        row.addWidget(self.ig_panel)
+        ig_col = QVBoxLayout()
+        ig_col.setContentsMargins(0, 0, 0, 0)
+        ig_col.addWidget(self.ig_panel)
+        ig_col.addStretch(1)
+        ig_wrap = QWidget()
+        ig_wrap.setFixedWidth(330)
+        ig_wrap.setLayout(ig_col)
+        row.addWidget(ig_wrap)
         return page
 
     def _build_home_main(self) -> QWidget:
@@ -5015,47 +5037,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(column)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
-
-        self.home_greet = QLabel("")
-        self.home_greet.setObjectName("pageTitle")
-        layout.addWidget(self.home_greet)
-
-        grid = QGridLayout()
-        grid.setSpacing(14)
-        self.home_tile_subs = {}
-        tiles = (
-            ("extract", "image", "Yüz ayıklama", lambda: self._go_to(PAGE_EXTRACT)),
-            ("review", "check", "İnceleme", lambda: self._go_to(PAGE_REVIEW)),
-            ("social", "share", "Sosyal medya", lambda: self._go_to(PAGE_SHARE)),
-            ("matchday", "trophy", "Maç günü listesi", self._open_next_matchday),
-        )
-        for i, (key, icon, title, handler) in enumerate(tiles):
-            tile, tl = self._card(margins=(16, 14, 16, 14), spacing=0, clickable=True)
-            tile.clicked.connect(handler)
-            inner = QHBoxLayout()
-            inner.setSpacing(12)
-            box = QLabel()
-            box.setObjectName("iconBox")
-            box.setFixedSize(44, 44)
-            box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            pm = make_pixmap(icon, K_GREEN_HI, 22)
-            if pm is not None:
-                box.setPixmap(pm)
-            inner.addWidget(box)
-            col = QVBoxLayout()
-            col.setSpacing(1)
-            t = QLabel(title)
-            t.setObjectName("rowTitle")
-            sub = QLabel("")
-            sub.setObjectName("rowSub")
-            sub.setWordWrap(True)
-            col.addWidget(t)
-            col.addWidget(sub)
-            inner.addLayout(col, 1)
-            tl.addLayout(inner)
-            self.home_tile_subs[key] = sub
-            grid.addWidget(tile, i // 2, i % 2)
-        layout.addLayout(grid)
 
         mid = QHBoxLayout()
         mid.setSpacing(14)
@@ -5081,48 +5062,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(fixture_card)
         layout.addStretch(1)
         return column
-
-    def _open_next_matchday(self):
-        nm = get_next_fixture()
-        if nm is None:
-            self._go_to(PAGE_MATCHES)
-        else:
-            self._open_matchday(nm)
-
-    def _refresh_home_tiles(self):
-        h = datetime.now().hour
-        greet = "Günaydın" if 5 <= h < 12 else ("İyi günler" if h < 18 else ("İyi akşamlar" if h < 24 else "İyi geceler"))
-        self.home_greet.setText(greet)
-        subs = self.home_tile_subs
-        hist = load_history()
-        if hist:
-            last = hist[0]
-            try:
-                d = datetime.fromisoformat(last.get("ts", "")).strftime("%d.%m")
-            except Exception:
-                d = ""
-            subs["extract"].setText(f"Son işlem {d} · {last.get('basarili', 0)} kare ayrıldı".replace("  ", " "))
-        else:
-            subs["extract"].setText("Referans + medya klasörünü seç, oyuncuya göre ayır")
-        mixed = 0
-        if self.work_folder:
-            try:
-                mixed = sum(1 for r in read_report(os.path.join(self.work_folder, "Rapor.csv"))
-                            if r["Sonuç"].startswith("Karışık"))
-            except Exception:
-                mixed = 0
-            subs["review"].setText(f"{mixed} karışık kare bekliyor" if mixed else "Bekleyen karışık kare yok")
-            subs["social"].setText("Story / Gönderi / Kare + logo hazırla")
-        else:
-            subs["review"].setText("Önce bir çıktı klasörü seç")
-            subs["social"].setText("Story / Gönderi / Kare + logo hazırla")
-        nm = get_next_fixture()
-        if nm is None:
-            subs["matchday"].setText("Yaklaşan maç yok")
-        else:
-            days = (nm["date"] - date.today()).days
-            when = "bugün" if days == 0 else ("yarın" if days == 1 else f"{days} gün sonra")
-            subs["matchday"].setText(f"{nm['opponent']} · {when}")
 
     # ==================================================================
     # SAYFA 2 — YÜZ AYIKLAMA (kaynaklar, motor ayarları, ilerleme, günlük)
@@ -5413,7 +5352,6 @@ class MainWindow(QMainWindow):
     # Ana sayfadaki kulüp kartları
     # ------------------------------------------------------------------
     def _refresh_club_cards(self):
-        self._refresh_home_tiles()
         self._refresh_next_match()
         self._refresh_fixture_rows()
         self._refresh_birthday_rows()
