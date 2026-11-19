@@ -2344,9 +2344,9 @@ class BrandMark(QWidget):
 
         logo = get_club_logo_pixmap(self._size)
         if logo is not None:
-            x = (self.width() - logo.width()) / 2
-            y = (self.height() - logo.height()) / 2
-            painter.drawPixmap(QPointF(x, y), logo)
+            ratio = logo.devicePixelRatio() or 1.0
+            lw, lh = logo.width() / ratio, logo.height() / ratio
+            painter.drawPixmap(QPointF((self.width() - lw) / 2, (self.height() - lh) / 2), logo)
             return
 
         path = QPainterPath()
@@ -3952,6 +3952,139 @@ class InstagramPanel(QWidget):
         self._view = view
 
 
+def _news_age(dt) -> str:
+    sec = max(0, int((datetime.now() - dt).total_seconds()))
+    if sec < 3600:
+        return f"{max(1, sec // 60)} dk önce"
+    if sec < 86400:
+        return f"{sec // 3600} saat önce"
+    if sec < 172800:
+        return "dün"
+    return f"{sec // 86400} gün önce"
+
+
+NEWS_FEED_URL = "https://news.google.com/rss/search?q=Kocaelispor+when:14d&hl=tr&gl=TR&ceid=TR:tr"
+
+
+def parse_news_feed(xml_bytes: bytes, limit: int = 8) -> list:
+    """Google Haberler RSS → [{title, source, ts, link}] (yeni→eski, aynı başlık tekrarsız)."""
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    root = ET.fromstring(xml_bytes)
+    items, seen = [], set()
+    for it in root.iter("item"):
+        title = (it.findtext("title") or "").strip()
+        link = (it.findtext("link") or "").strip()
+        src_el = it.find("source")
+        source = (src_el.text or "").strip() if src_el is not None and src_el.text else ""
+        if source and title.endswith(" - " + source):
+            title = title[: -len(source) - 3].rstrip()
+        elif not source and " - " in title:
+            title, _, source = title.rpartition(" - ")
+        try:
+            ts = parsedate_to_datetime(it.findtext("pubDate") or "").astimezone().replace(tzinfo=None)
+        except Exception:
+            ts = datetime.now()
+        key = turkish_lower(title)[:60]
+        if not title or not link or key in seen:
+            continue
+        seen.add(key)
+        items.append({"title": title, "source": source, "ts": ts, "link": link})
+    items.sort(key=lambda x: x["ts"], reverse=True)
+    return items[:limit]
+
+
+class NewsWorker(QThread):
+    done_signal = pyqtSignal(list, str)   # haberler, hata metni
+
+    def run(self):
+        try:
+            import urllib.request
+            req = urllib.request.Request(NEWS_FEED_URL, headers={"User-Agent": "Mozilla/5.0 (MediaStaffKS)"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = r.read()
+            self.done_signal.emit(parse_news_feed(data), "")
+        except Exception as e:
+            self.done_signal.emit([], str(e))
+
+
+class NewsPanel(QWidget):
+    """Kocaelispor ile ilgili son haberler (haber sitelerinden, Google Haberler akışıyla)."""
+    STALE_SEC = 600
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self._worker = None
+        self._loaded_at = None
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        card, c = win._card(margins=(14, 14, 14, 10), spacing=6)
+        head = QHBoxLayout()
+        head.addWidget(win._section_label("Son haberler"))
+        head.addStretch(1)
+        self.reload_btn = QPushButton("Yenile")
+        self.reload_btn.setObjectName("linkBtn")
+        self.reload_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reload_btn.clicked.connect(self.refresh)
+        head.addWidget(self.reload_btn)
+        c.addLayout(head)
+        self.rows = QVBoxLayout()
+        self.rows.setSpacing(0)
+        c.addLayout(self.rows)
+        outer.addWidget(card)
+
+    def _set_status(self, text: str):
+        clear_layout(self.rows)
+        lab = QLabel(text)
+        lab.setObjectName("emptyHint")
+        lab.setWordWrap(True)
+        self.rows.addWidget(lab)
+
+    def refresh_if_stale(self):
+        if self._loaded_at is None or (datetime.now() - self._loaded_at).total_seconds() > self.STALE_SEC:
+            self.refresh()
+
+    def refresh(self):
+        if self._worker is not None and self._worker.isRunning():
+            return
+        self.reload_btn.setEnabled(False)
+        if self._loaded_at is None:
+            self._set_status("Haberler yükleniyor…")
+        self._worker = NewsWorker()
+        self._worker.done_signal.connect(self._done)
+        self._worker.start()
+
+    def _done(self, items: list, error: str):
+        self.reload_btn.setEnabled(True)
+        if error and not items:
+            if self._loaded_at is None:
+                self._set_status("Haberler alınamadı. İnternet bağlantısını kontrol edip \"Yenile\"ye bas.")
+            return
+        self._loaded_at = datetime.now()
+        clear_layout(self.rows)
+        if not items:
+            self._set_status("Şu an gösterilecek haber bulunamadı.")
+            return
+        for it in items:
+            row = ClickableFrame()
+            row.setObjectName("rowLine")
+            row.setProperty("clickable", True)
+            row.setCursor(Qt.CursorShape.PointingHandCursor)
+            row.clicked.connect(lambda link=it["link"]: QDesktopServices.openUrl(QUrl(link)))
+            v = QVBoxLayout(row)
+            v.setContentsMargins(0, 8, 0, 8)
+            v.setSpacing(2)
+            t = QLabel(it["title"])
+            t.setObjectName("rowTitle")
+            t.setWordWrap(True)
+            sub = QLabel(f"{it['source']} · {_news_age(it['ts'])}" if it["source"] else _news_age(it["ts"]))
+            sub.setObjectName("dateSub")
+            v.addWidget(t)
+            v.addWidget(sub)
+            self.rows.addWidget(row)
+
+
 class SharePage(QWidget):
     TABS = ("Sosyal medya", "İçerik dengesi")
 
@@ -5300,15 +5433,16 @@ class MainWindow(QMainWindow):
 
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
-        self.nav_buttons: list[QToolButton] = []
+        self.nav_buttons: dict = {}   # sayfa indeksi -> düğme (İnceleme menüde yok; sayfa diğer yerlerden açılır)
         nav_inner = QWidget()
         nav_layout = QVBoxLayout(nav_inner)
         nav_layout.setContentsMargins(0, 0, 0, 0)
         nav_layout.setSpacing(2)
-        for index, (icon_name, label) in enumerate((
-                ("home", "Ana Sayfa"), ("image", "Ayıklama"), ("check", "İnceleme"), ("share", "Sosyal"),
-                ("trophy", "Maçlar"), ("gift", "Doğum"), ("megaphone", "Basın"), ("report", "Raporlar"),
-                ("sliders", "Ayarlar"))):
+        for index, (icon_name, label) in (
+                (PAGE_HOME, ("home", "Ana Sayfa")), (PAGE_EXTRACT, ("image", "Ayıklama")),
+                (PAGE_SHARE, ("share", "Sosyal")), (PAGE_MATCHES, ("trophy", "Maçlar")),
+                (PAGE_BIRTHDAYS, ("gift", "Doğum")), (PAGE_PRESS, ("megaphone", "Basın")),
+                (PAGE_REPORTS, ("report", "Raporlar")), (PAGE_SETTINGS, ("sliders", "Ayarlar"))):
             btn = QToolButton()
             btn.setObjectName("navBtn")
             btn.setCheckable(True)
@@ -5321,7 +5455,7 @@ class MainWindow(QMainWindow):
             btn.setFixedSize(66, 52)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.nav_group.addButton(btn, index)
-            self.nav_buttons.append(btn)
+            self.nav_buttons[index] = btn
             nav_layout.addWidget(btn, 0, Qt.AlignmentFlag.AlignHCenter)
         nav_layout.addStretch(1)
         self.nav_group.idClicked.connect(self._go_to)
@@ -5418,13 +5552,20 @@ class MainWindow(QMainWindow):
 
     def _go_to(self, index: int):
         self.stack.setCurrentIndex(index)
-        if 0 <= index < len(self.nav_buttons):
-            self.nav_buttons[index].setChecked(True)
+        btn = self.nav_buttons.get(index)
+        if btn is not None:
+            btn.setChecked(True)
+        else:                       # menüde düğmesi olmayan sayfa (İnceleme): hiçbiri seçili kalmasın
+            self.nav_group.setExclusive(False)
+            for b in self.nav_buttons.values():
+                b.setChecked(False)
+            self.nav_group.setExclusive(True)
         title, sub = PAGE_META[index]
         self.page_title.setText(title)
         self.page_sub.setText(sub)
         if index == PAGE_HOME:
             self.ig_panel.ensure()
+            self.news_panel.refresh_if_stale()
         elif index == PAGE_REVIEW:
             self.review_page.on_show()
         elif index == PAGE_SHARE:
@@ -5450,14 +5591,18 @@ class MainWindow(QMainWindow):
         row.setSpacing(20)
         row.addWidget(self._scroll(self._build_home_main()), 1)
         self.ig_panel = InstagramPanel(self)
+        self.news_panel = NewsPanel(self)
         ig_col = QVBoxLayout()
-        ig_col.setContentsMargins(0, 0, 0, 0)
+        ig_col.setContentsMargins(0, 0, 8, 0)
+        ig_col.setSpacing(16)
         ig_col.addWidget(self.ig_panel)
+        ig_col.addWidget(self.news_panel)
         ig_col.addStretch(1)
         ig_wrap = QWidget()
-        ig_wrap.setFixedWidth(330)
         ig_wrap.setLayout(ig_col)
-        row.addWidget(ig_wrap)
+        ig_scroll = self._scroll(ig_wrap)
+        ig_scroll.setFixedWidth(352)
+        row.addWidget(ig_scroll)
         return page
 
     def _build_home_main(self) -> QWidget:
