@@ -4066,23 +4066,70 @@ class NewsPanel(QWidget):
         if not items:
             self._set_status("Şu an gösterilecek haber bulunamadı.")
             return
-        for it in items:
-            row = ClickableFrame()
-            row.setObjectName("rowLine")
-            row.setProperty("clickable", True)
-            row.setCursor(Qt.CursorShape.PointingHandCursor)
-            row.clicked.connect(lambda link=it["link"]: QDesktopServices.openUrl(QUrl(link)))
-            v = QVBoxLayout(row)
-            v.setContentsMargins(0, 8, 0, 8)
-            v.setSpacing(2)
-            t = QLabel(it["title"])
-            t.setObjectName("rowTitle")
-            t.setWordWrap(True)
-            sub = QLabel(f"{it['source']} · {_news_age(it['ts'])}" if it["source"] else _news_age(it["ts"]))
-            sub.setObjectName("dateSub")
-            v.addWidget(t)
-            v.addWidget(sub)
-            self.rows.addWidget(row)
+        for i, it in enumerate(items[:7]):
+            self.rows.addWidget(self._news_row(it, featured=(i == 0)))
+            self.rows.addSpacing(8 if i == 0 else 2)
+        more = QPushButton("Tüm haberleri gör ›")
+        more.setObjectName("linkBtn")
+        more.setCursor(Qt.CursorShape.PointingHandCursor)
+        more.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://news.google.com/search?q=Kocaelispor&hl=tr&gl=TR&ceid=TR:tr")))
+        self.rows.addWidget(more, 0, Qt.AlignmentFlag.AlignRight)
+
+    _SRC_COLORS = None
+
+    def _src_colors(self, source: str):
+        pal = [(K_GREEN_HI, K_GREEN_BG), (K_AMBER, K_AMBER_BG), (K_BLUE, K_BLUE_BG), (K_RED_HI, K_RED_BG), (K_SOFT, "#1B2A22")]
+        return pal[sum(ord(c) for c in source) % len(pal)]
+
+    def _news_row(self, it: dict, featured: bool) -> QWidget:
+        title = it["title"]
+        limit = 120 if featured else 95
+        if len(title) > limit:
+            title = title[:limit].rsplit(" ", 1)[0].rstrip(" ,;:-") + "…"
+        row = ClickableFrame()
+        row.setObjectName("newsFeat" if featured else "newsRow")
+        row.setCursor(Qt.CursorShape.PointingHandCursor)
+        row.setToolTip(it["title"])
+        row.setStyleSheet(
+            f"QFrame#newsFeat {{ background: {K_GREEN_BG}; border: 1px solid #1F5A42; border-radius: 14px; }}"
+            f"QFrame#newsFeat:hover {{ border-color: {K_GREEN}; }}"
+            f"QFrame#newsRow {{ background: transparent; border: none; border-radius: 10px; }}"
+            f"QFrame#newsRow:hover {{ background: #16211C; }}")
+        row.clicked.connect(lambda link=it["link"]: QDesktopServices.openUrl(QUrl(link)))
+        h = QHBoxLayout(row)
+        h.setContentsMargins(12 if featured else 8, 12 if featured else 8, 12 if featured else 8, 12 if featured else 8)
+        h.setSpacing(12)
+        src = it["source"] or "Haber"
+        fg, bg = self._src_colors(src)
+        badge = QLabel(initials(src) if len(src.split()) > 1 else turkish_upper(src[:2]))
+        badge.setFixedSize(40 if featured else 34, 40 if featured else 34)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setStyleSheet(f"background: {bg}; color: {fg}; border-radius: {12 if featured else 10}px;"
+                            f"font-weight: 700; font-size: {13 if featured else 11}px; border: none;")
+        h.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(4)
+        meta = QHBoxLayout()
+        meta.setSpacing(8)
+        src_lab = QLabel(src)
+        src_lab.setStyleSheet(f"color: {fg}; font-size: 11px; font-weight: 700; background: transparent; border: none;")
+        age = QLabel(_news_age(it["ts"]))
+        age.setStyleSheet(f"color: {K_MUTED}; font-size: 11px; background: transparent; border: none;")
+        meta.addWidget(src_lab)
+        meta.addWidget(age)
+        if (datetime.now() - it["ts"]).total_seconds() < 3 * 3600:
+            chip = make_chip("yeni", "#04140D", K_GREEN)
+            chip.setFixedHeight(18)
+            meta.addWidget(chip)
+        meta.addStretch(1)
+        col.addLayout(meta)
+        t = QLabel(title)
+        t.setWordWrap(True)
+        t.setStyleSheet(f"color: {K_TEXT}; font-size: {15 if featured else 13}px; font-weight: {700 if featured else 600};"
+                        "background: transparent; border: none;")
+        col.addWidget(t)
+        h.addLayout(col, 1)
+        return row
 
 
 class SharePage(QWidget):
