@@ -136,13 +136,12 @@ from PyQt6.QtWidgets import (
 )
 try:  # İsteğe bağlı (Instagram önizlemesi): pip install PyQt6-WebEngine — QApplication'dan ÖNCE içe aktarılmalı
     from PyQt6.QtWebEngineWidgets import QWebEngineView
-    from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineScript, QWebEngineProfile
+    from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
     HAS_WEBENGINE = True
 except Exception:
     QWebEngineView = None
     QWebEnginePage = None
     QWebEngineScript = None
-    QWebEngineProfile = None
     HAS_WEBENGINE = False
 
 
@@ -2677,7 +2676,7 @@ MATCHDAY_PHASES = [
 def load_medya_extra() -> dict:
     base = {
         "share_links": {}, "share_message": DEFAULT_SHARE_MESSAGE, "best_count": DEFAULT_BEST_COUNT,
-        "matchday": {}, "instagram_handle": "kocaelispor", "x_handle": "Kocaelispor",
+        "matchday": {}, "instagram_handle": "kocaelispor",
         "social": {"formats": ["Story", "Gonderi"], "mode": "Kırp", "logo": True,
                    "logo_pos": "Sağ alt", "logo_size": 12, "logo_kind": "KSmedya", "source": "Tüm oyuncu klasörleri"},
     }
@@ -3951,382 +3950,6 @@ class InstagramPanel(QWidget):
         view.setUrl(QUrl(f"https://www.instagram.com/{self._handle_text()}/embed/"))
         self.host.addWidget(view)
         self._view = view
-
-
-def parse_tweets(html: str, handle: str, limit: int = 2) -> list:
-    """syndication.twitter.com profil sayfasındaki __NEXT_DATA__ JSON'undan [{text, ts, link}] (yeni→eski)."""
-    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
-    if not m:
-        return []
-    data = json.loads(m.group(1))
-    entries = (((data.get("props") or {}).get("pageProps") or {}).get("timeline") or {}).get("entries") or []
-    out = []
-    for e in entries:
-        t = (e.get("content") or {}).get("tweet")
-        if not isinstance(t, dict):
-            continue
-        text = t.get("full_text") or t.get("text") or ""
-        text = re.sub(r"https://t\.co/\S+", "", text)
-        text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").strip()
-        if not text:
-            continue
-        try:
-            ts = datetime.strptime(t.get("created_at", ""), "%a %b %d %H:%M:%S %z %Y").astimezone().replace(tzinfo=None)
-        except ValueError:
-            continue
-        link = f"https://x.com/{handle}/status/{t.get('id_str') or t.get('conversation_id_str') or ''}"
-        out.append({"text": text, "ts": ts, "link": link})
-    out.sort(key=lambda x: x["ts"], reverse=True)
-    return out[:limit]
-
-
-class TweetWorker(QThread):
-    done_signal = pyqtSignal(list, str)
-
-    def __init__(self, handle: str, parent=None):
-        super().__init__(parent)
-        self.handle = handle
-
-    def run(self):
-        try:
-            url = f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{self.handle}?lang=tr&dnt=true"
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/124.0 Safari/537.36",
-                "Accept-Language": "tr-TR,tr;q=0.9"})
-            with urllib.request.urlopen(req, timeout=15) as r:
-                html = r.read().decode("utf-8", "replace")
-            self.done_signal.emit(parse_tweets(html, self.handle), "")
-        except Exception as e:
-            self.done_signal.emit([], str(e))
-
-
-_x_profile = None
-
-
-def get_x_profile():
-    """X için kalıcı (çerezleri saklayan) tarayıcı profili — giriş bir kez yapılır."""
-    global _x_profile
-    if _x_profile is None and HAS_WEBENGINE:
-        p = QWebEngineProfile("ks_x_oturum")
-        base = os.path.join(APP_DIR, "x_oturum")
-        os.makedirs(base, exist_ok=True)
-        p.setPersistentStoragePath(base)
-        p.setCachePath(os.path.join(base, "cache"))
-        p.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
-        _x_profile = p
-    return _x_profile
-
-
-X_SCRAPE_JS = """(function(){
- var out=[];
- document.querySelectorAll('article[data-testid="tweet"]').forEach(function(a){
-   var t=a.querySelector('[data-testid="tweetText"]'), time=a.querySelector('time');
-   if(!t||!time) return;
-   var l=time.closest('a'), c=a.querySelector('[data-testid="socialContext"]');
-   var ctx=c?c.innerText:'';
-   out.push({text:t.innerText, ts:time.getAttribute('datetime'), link:l?l.href:'',
-             skip:/Pinned|Sabitlen|reposted|yeniden|retweet/i.test(ctx)});
- });
- return JSON.stringify({tweets:out, login:!!document.querySelector('[data-testid="loginButton"],a[href="/login"],a[href="/i/flow/login"]')});
-})()"""
-
-
-if HAS_WEBENGINE:
-    class XLoginDialog(QDialog):
-        """X'e bir kez giriş: resmî x.com sayfası uygulama içinde açılır, çerezler bu bilgisayarda saklanır."""
-
-        def __init__(self, parent=None):
-            super().__init__(parent)
-            self.setWindowTitle("X hesabına giriş")
-            self.resize(520, 740)
-            lay = QVBoxLayout(self)
-            lay.setContentsMargins(16, 14, 16, 14)
-            lay.setSpacing(10)
-            info = QLabel("X'e giriş yap (şifreni uygulama görmez, doğrudan x.com'a yazılır). "
-                          "Bittiğinde \"Bitti\"ye bas. Mümkünse medya hesabıyla giriş yap.")
-            info.setWordWrap(True)
-            info.setObjectName("noteText")
-            lay.addWidget(info)
-            self.view = QWebEngineView()
-            self.page_ = QWebEnginePage(get_x_profile(), self.view)
-            self.view.setPage(self.page_)
-            self.view.setUrl(QUrl("https://x.com/i/flow/login"))
-            lay.addWidget(self.view, 1)
-            done = QPushButton("Bitti")
-            done.setObjectName("startBtn")
-            done.setFixedHeight(42)
-            done.clicked.connect(self.accept)
-            lay.addWidget(done)
-
-
-class XScraper(QObject):
-    """Gizli bir web görünümüyle x.com/<hesap> sayfasını açıp son tweet'leri okur (oturum açıksa)."""
-    done = pyqtSignal(list, str)   # tweets, durum: ok | login | empty | error
-
-    def __init__(self, handle: str, parent=None):
-        super().__init__(parent)
-        self.handle = handle
-        self._finished = False
-        self._tries = 0
-        self._last_login = False
-        self.view = QWebEngineView()
-        self.view.resize(900, 1500)
-        self.page = QWebEnginePage(get_x_profile(), self.view)
-        self.view.setPage(self.page)
-        self.page.loadFinished.connect(self._loaded)
-        self.page.setUrl(QUrl(f"https://x.com/{handle}"))
-        QTimer.singleShot(45000, lambda: self._finish([], "error"))
-
-    def _loaded(self, ok: bool):
-        if not ok:
-            self._finish([], "error")
-            return
-        QTimer.singleShot(5000, self._grab)
-
-    def _grab(self):
-        if not self._finished:
-            self.page.runJavaScript(X_SCRAPE_JS, self._got)
-
-    def _got(self, res):
-        if self._finished:
-            return
-        tweets = []
-        try:
-            data = json.loads(res) if isinstance(res, str) else {}
-            self._last_login = bool(data.get("login"))
-            for t in data.get("tweets", []):
-                if t.get("skip") or not t.get("text"):
-                    continue
-                ts = datetime.fromisoformat(t["ts"].replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
-                tweets.append({"text": t["text"].strip(), "ts": ts, "link": t.get("link") or f"https://x.com/{self.handle}"})
-        except Exception:
-            tweets = []
-        if tweets:
-            tweets.sort(key=lambda x: x["ts"], reverse=True)
-            self._finish(tweets[:2], "ok")
-        elif self._tries < 2:
-            self._tries += 1
-            QTimer.singleShot(4000, self._grab)
-        else:
-            self._finish([], "login" if self._last_login else "empty")
-
-    def _finish(self, tweets: list, state: str):
-        if self._finished:
-            return
-        self._finished = True
-        self.done.emit(tweets, state)
-        self.view.deleteLater()
-
-
-def parse_tweets(html: str, handle: str, limit: int = 2) -> list:
-    """syndication.twitter.com profil sayfasındaki __NEXT_DATA__ JSON'undan [{text, ts, link}] (yeni→eski)."""
-    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
-    if not m:
-        return []
-    data = json.loads(m.group(1))
-    entries = (((data.get("props") or {}).get("pageProps") or {}).get("timeline") or {}).get("entries") or []
-    out = []
-    for e in entries:
-        t = (e.get("content") or {}).get("tweet")
-        if not isinstance(t, dict):
-            continue
-        text = t.get("full_text") or t.get("text") or ""
-        text = re.sub(r"https://t\.co/\S+", "", text)
-        text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").strip()
-        if not text:
-            continue
-        try:
-            ts = datetime.strptime(t.get("created_at", ""), "%a %b %d %H:%M:%S %z %Y").astimezone().replace(tzinfo=None)
-        except ValueError:
-            continue
-        link = f"https://x.com/{handle}/status/{t.get('id_str') or t.get('conversation_id_str') or ''}"
-        out.append({"text": text, "ts": ts, "link": link})
-    out.sort(key=lambda x: x["ts"], reverse=True)
-    return out[:limit]
-
-
-class TweetWorker(QThread):
-    done_signal = pyqtSignal(list, str)
-
-    def __init__(self, handle: str, parent=None):
-        super().__init__(parent)
-        self.handle = handle
-
-    def run(self):
-        try:
-            url = f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{self.handle}?lang=tr&dnt=true"
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/124.0 Safari/537.36",
-                "Accept-Language": "tr-TR,tr;q=0.9"})
-            with urllib.request.urlopen(req, timeout=15) as r:
-                html = r.read().decode("utf-8", "replace")
-            self.done_signal.emit(parse_tweets(html, self.handle), "")
-        except Exception as e:
-            self.done_signal.emit([], str(e))
-
-
-class TweetPanel(QWidget):
-    """Kocaelispor'un X hesabındaki son tweet'ler — metin olarak, uygulamanın kendi görünümüyle.
-    Önce herkese açık veri denenir; olmazsa uygulama içi oturumla (tek seferlik X girişi) okunur."""
-    STALE_SEC = 600
-
-    def __init__(self, win):
-        super().__init__()
-        self.win = win
-        self.extra = load_medya_extra()
-        self._worker = None
-        self._scraper = None
-        self._loaded_at = None
-        v = QVBoxLayout(self)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(8)
-        head = QHBoxLayout()
-        head.setSpacing(8)
-        t = QLabel("Son tweet")
-        t.setObjectName("rowTitle")
-        head.addWidget(t)
-        head.addStretch(1)
-        head.addWidget(QLabel("@"))
-        self.handle = QLineEdit(str(self.extra.get("x_handle") or "Kocaelispor"))
-        self.handle.setFixedSize(140, 34)
-        self.handle.returnPressed.connect(self.reload)
-        head.addWidget(self.handle)
-        self.rb = QPushButton("Yenile")
-        self.rb.setObjectName("linkBtn")
-        self.rb.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.rb.clicked.connect(self.reload)
-        head.addWidget(self.rb)
-        v.addLayout(head)
-        self.rows = QVBoxLayout()
-        self.rows.setSpacing(0)
-        v.addLayout(self.rows)
-        v.addStretch(1)
-
-    def _handle_text(self) -> str:
-        return self.handle.text().strip().lstrip("@").strip("/ ") or "Kocaelispor"
-
-    def _open_x(self):
-        QDesktopServices.openUrl(QUrl(f"https://x.com/{self._handle_text()}"))
-
-    def _login(self):
-        if not HAS_WEBENGINE:
-            return
-        XLoginDialog(self.win).exec()
-        self._loaded_at = None
-        self._scrape()
-
-    def _status(self, text: str, buttons=()):
-        clear_layout(self.rows)
-        lab = QLabel(text)
-        lab.setObjectName("emptyHint")
-        lab.setWordWrap(True)
-        self.rows.addWidget(lab)
-        if buttons:
-            row = QHBoxLayout()
-            row.setSpacing(8)
-            for label, handler, primary in buttons:
-                b = QPushButton(label)
-                b.setObjectName("startBtn" if primary else "linkBtn")
-                if primary:
-                    b.setFixedHeight(38)
-                b.setCursor(Qt.CursorShape.PointingHandCursor)
-                b.clicked.connect(handler)
-                row.addWidget(b)
-            row.addStretch(1)
-            holder = QWidget()
-            holder.setLayout(row)
-            self.rows.addSpacing(6)
-            self.rows.addWidget(holder)
-
-    def reload(self):
-        self.extra["x_handle"] = self._handle_text()
-        save_medya_extra(self.extra, keys=("x_handle",))
-        self.refresh()
-
-    def refresh_if_stale(self):
-        if self._loaded_at is None or (datetime.now() - self._loaded_at).total_seconds() > self.STALE_SEC:
-            self.refresh()
-
-    def refresh(self):
-        if self._worker is not None and self._worker.isRunning():
-            return
-        self.rb.setEnabled(False)
-        if self._loaded_at is None:
-            self._status("Tweet yükleniyor…")
-        self._worker = TweetWorker(self._handle_text())
-        self._worker.done_signal.connect(self._done)
-        self._worker.start()
-
-    def _done(self, tweets: list, error: str):
-        if tweets:
-            self.rb.setEnabled(True)
-            self._render(tweets)
-        elif HAS_WEBENGINE:
-            self._scrape()
-        else:
-            self.rb.setEnabled(True)
-            if self._loaded_at is None:
-                self._status("Tweet'leri göstermek için web bileşeni (PyQt6-WebEngine) gerekiyor.",
-                             [("Web bileşenini kur", self._install, True), ("X'te aç ›", self._open_x, False)])
-
-    def _install(self):
-        ig = getattr(self.win, "ig_panel", None)
-        if ig is not None and hasattr(ig, "_install"):
-            ig.ensure()
-            if hasattr(ig, "install_btn"):
-                ig._install()
-                self._status("Kuruluyor… bitince uygulamayı yeniden başlat (Instagram panelinde düğme çıkar).")
-
-    def _scrape(self):
-        if self._scraper is not None:
-            return
-        self.rb.setEnabled(False)
-        if self._loaded_at is None:
-            self._status("X'ten okunuyor…")
-        self._scraper = XScraper(self._handle_text(), self)
-        self._scraper.done.connect(self._scrape_done)
-
-    def _scrape_done(self, tweets: list, state: str):
-        self._scraper = None
-        self.rb.setEnabled(True)
-        if tweets:
-            self._render(tweets)
-            return
-        if self._loaded_at is not None:
-            return                       # eski içerik ekranda kalsın
-        if state == "login":
-            self._status("X bu tweet'leri girişsiz göstermiyor. Bir kez giriş yaparsan uygulama sonra kendisi okur.",
-                         [("X'e giriş yap", self._login, True), ("X'te aç ›", self._open_x, False)])
-        else:
-            self._status("Tweet'ler alınamadı (hesap adı yanlış olabilir ya da X yanıt vermedi).",
-                         [("X'e giriş yap", self._login, True), ("X'te aç ›", self._open_x, False)])
-
-    def _render(self, tweets: list):
-        self._loaded_at = datetime.now()
-        clear_layout(self.rows)
-        for tw in tweets:
-            text = tw["text"]
-            if len(text) > 230:
-                text = text[:230].rsplit(" ", 1)[0].rstrip(" ,;:-") + "…"
-            row = ClickableFrame()
-            row.setObjectName("rowLine")
-            row.setProperty("clickable", True)
-            row.setCursor(Qt.CursorShape.PointingHandCursor)
-            row.clicked.connect(lambda link=tw["link"]: QDesktopServices.openUrl(QUrl(link)))
-            lay = QVBoxLayout(row)
-            lay.setContentsMargins(0, 8, 0, 8)
-            lay.setSpacing(3)
-            t = QLabel(text)
-            t.setWordWrap(True)
-            t.setStyleSheet(f"color: {K_TEXT}; font-size: 13px; font-weight: 500; background: transparent; border: none;")
-            lay.addWidget(t)
-            fresh = (datetime.now() - tw["ts"]).total_seconds() < 3 * 3600
-            sub = QLabel(("● " if fresh else "") + f"@{self._handle_text()} · {_news_age(tw['ts'])}")
-            sub.setStyleSheet(f"color: {K_GREEN_HI if fresh else K_MUTED}; font-size: 11px; background: transparent; border: none;")
-            lay.addWidget(sub)
-            self.rows.addWidget(row)
 
 
 def _news_age(dt) -> str:
@@ -5958,7 +5581,6 @@ class MainWindow(QMainWindow):
         self.page_sub.setText(sub)
         if index == PAGE_HOME:
             self.ig_panel.ensure()
-            self.tweet_panel.refresh_if_stale()
             self.news_panel.refresh_if_stale()
         elif index == PAGE_REVIEW:
             self.review_page.on_show()
@@ -6040,13 +5662,9 @@ class MainWindow(QMainWindow):
         self.track_faces = QVBoxLayout()
         self.track_faces.setSpacing(8)
         self.track_body.addLayout(self.track_faces, 1)
-        sep = QFrame()
-        sep.setObjectName("vLine")
-        sep.setFixedWidth(1)
-        sep.setStyleSheet(f"background: {K_LINE}; border: none;")
-        self.track_body.addWidget(sep)
-        self.tweet_panel = TweetPanel(self)
-        self.track_body.addWidget(self.tweet_panel, 1)
+        self.track_side = QVBoxLayout()
+        self.track_side.setSpacing(0)
+        self.track_body.addLayout(self.track_side, 1)
         t_layout.addLayout(self.track_body)
         layout.addWidget(track)
 
@@ -6389,22 +6007,30 @@ class MainWindow(QMainWindow):
 
     def _refresh_share_track(self):
         clear_layout(self.track_faces)
+        clear_layout(self.track_side)
         log = load_share_log()
         if not log:
-            hint = QLabel("Henüz kayıt yok. Bir antrenman paylaşımını \"+ Paylaşım kaydet\" ile işaretleyince "
-                          "son paylaşılan oyuncular burada görünür.")
+            hint = QLabel("Henüz kayıt yok. Bir antrenman paylaşımını \"+ Paylaşım kaydet\" ile işaretleyince burada "
+                          "son paylaşılan oyuncular ve sırası gelenler görünür.")
             hint.setObjectName("emptyHint")
             hint.setWordWrap(True)
             self.track_faces.addWidget(hint)
             self.track_faces.addStretch(1)
             return
+        universe = self._share_universe()
+        ov = share_overview(log, universe, date.today())
+        st = share_stats(log, universe, date.today())
         last = log[0]
-        try:
-            d = date.fromisoformat(last["date"])
-            ds = f"{d.day} {TURKISH_MONTHS[d.month]}"
-        except ValueError:
-            ds = last["date"]
-        cap = QLabel(f"Son paylaşım · {ds} · {len(last['players'])} oyuncu")
+
+        def day_text(iso: str, with_wd: bool = False) -> str:
+            try:
+                d = date.fromisoformat(iso)
+                return f"{d.day} {TURKISH_MONTHS[d.month]}" + (f" {DAYS_TR[d.weekday()][:3]}" if with_wd else "")
+            except ValueError:
+                return iso
+
+        # ---- Sol: son paylaşılan oyuncu yüzleri + önceki paylaşımlar
+        cap = QLabel(f"Son paylaşım · {day_text(last['date'])} · {len(last['players'])} oyuncu")
         cap.setObjectName("rowTitle")
         self.track_faces.addWidget(cap)
         grid = QGridLayout()
@@ -6422,17 +6048,63 @@ class MainWindow(QMainWindow):
             holder.setFixedWidth(70)
             grid.addWidget(holder, i // 4, i % 4)
         self.track_faces.addLayout(grid)
-        # Geçmiş / istatistik özeti (tam liste için "Geçmiş ve istatistik ›")
-        st = share_stats(log, self._share_universe(), date.today())
+        prev = log[1:4]
+        if prev:
+            self.track_faces.addSpacing(6)
+            cap3 = QLabel("Önceki paylaşımlar")
+            cap3.setObjectName("rowTitle")
+            self.track_faces.addWidget(cap3)
+            for e in prev:
+                row = QFrame()
+                row.setObjectName("rowLine")
+                row.setFixedHeight(34)
+                r = QHBoxLayout(row)
+                r.setContentsMargins(0, 0, 0, 0)
+                lab = QLabel(day_text(e["date"], True))
+                lab.setObjectName("bdName")
+                cnt = QLabel(f"{len(e['players'])} oyuncu")
+                cnt.setObjectName("dateSub")
+                r.addWidget(lab)
+                r.addStretch(1)
+                r.addWidget(cnt)
+                self.track_faces.addWidget(row)
+        self.track_faces.addStretch(1)
+
+        # ---- Sağ: sırası gelenler + en çok paylaşılanlar
+        cap2 = QLabel("Sırası gelenler")
+        cap2.setObjectName("rowTitle")
+        self.track_side.addWidget(cap2)
+        self.track_side.addSpacing(6)
+        for n, days in ov["waiting"]:
+            row = QFrame()
+            row.setObjectName("rowLine")
+            row.setFixedHeight(34)
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(8)
+            nm = ElidedLabel(n)
+            nm.setObjectName("bdName")
+            rl.addWidget(nm, 1)
+            if days is None:
+                chip = make_chip("hiç paylaşılmadı", K_AMBER, K_AMBER_BG)
+            else:
+                chip = make_chip(f"{days} gün önce", K_MUTED, "#1B2A22")
+            rl.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
+            self.track_side.addWidget(row)
         top_rows = [r for r in st["rows"] if r[1] > 0][:4]
         if top_rows:
-            self.track_faces.addSpacing(6)
-            cap2 = QLabel(f"En çok paylaşılanlar · {st['entries']} paylaşım")
-            cap2.setObjectName("rowTitle")
-            self.track_faces.addWidget(cap2)
+            self.track_side.addSpacing(14)
+            cap4 = QLabel(f"En çok paylaşılanlar · {st['entries']} paylaşım")
+            cap4.setObjectName("rowTitle")
+            self.track_side.addWidget(cap4)
+            self.track_side.addSpacing(6)
             top_n = top_rows[0][1] or 1
             for n, c, _last in top_rows:
-                r = QHBoxLayout()
+                row = QFrame()
+                row.setObjectName("rowLine")
+                row.setFixedHeight(34)
+                r = QHBoxLayout(row)
+                r.setContentsMargins(0, 0, 0, 0)
                 r.setSpacing(10)
                 nm = ElidedLabel(n)
                 nm.setObjectName("bdName")
@@ -6446,35 +6118,8 @@ class MainWindow(QMainWindow):
                 cnt.setFixedWidth(22)
                 cnt.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 r.addWidget(cnt)
-                holder = QWidget()
-                holder.setLayout(r)
-                holder.setFixedHeight(26)
-                self.track_faces.addWidget(holder)
-        prev = log[1:4]
-        if prev:
-            self.track_faces.addSpacing(6)
-            cap3 = QLabel("Önceki paylaşımlar")
-            cap3.setObjectName("rowTitle")
-            self.track_faces.addWidget(cap3)
-            for e in prev:
-                try:
-                    d = date.fromisoformat(e["date"])
-                    ds = f"{d.day} {TURKISH_MONTHS[d.month]} {DAYS_TR[d.weekday()][:3]}"
-                except ValueError:
-                    ds = e["date"]
-                r = QHBoxLayout()
-                lab = QLabel(ds)
-                lab.setObjectName("bdName")
-                cnt = QLabel(f"{len(e['players'])} oyuncu")
-                cnt.setObjectName("dateSub")
-                r.addWidget(lab)
-                r.addStretch(1)
-                r.addWidget(cnt)
-                holder = QWidget()
-                holder.setLayout(r)
-                holder.setFixedHeight(24)
-                self.track_faces.addWidget(holder)
-        self.track_faces.addStretch(1)
+                self.track_side.addWidget(row)
+        self.track_side.addStretch(1)
 
     def _refresh_club_cards(self):
         self._refresh_share_track()
