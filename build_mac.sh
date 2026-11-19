@@ -90,6 +90,9 @@ say "MediaStaffKS.app derleniyor (birkaç dakika sürebilir)"
   --exclude-module tkinter \
   main.py
 
+say "Qt WebEngine yardımcı uygulaması denetleniyor"
+bash fix_webengine.sh dist/MediaStaffKS.app "$PY"
+
 say "MediaStaffKS-Admin.app derleniyor"
 "$PY" -m PyInstaller --noconfirm --windowed --onedir \
   --name MediaStaffKS-Admin --icon icon.icns \
@@ -109,6 +112,11 @@ for d in takim_logolari logolar logos oyuncu_fotograflari oyuncularimiz oyuncula
 done
 shopt -u nullglob nocaseglob
 mkdir -p "$DATA_DIR/oyuncu_fotograflari" "$DATA_DIR/takim_logolari"
+
+# --- Paketi ekran açmadan denetle ----------------------------------------------------------
+say "Paket denetleniyor (--selftest)"
+QT_QPA_PLATFORM=offscreen MEDIASTAFF_DATA="$(mktemp -d)" dist/MediaStaffKS.app/Contents/MacOS/MediaStaffKS --selftest \
+  || die "Paket denetimi başarısız (yukarıdaki HATA satırlarına bak)."
 
 # --- Kur ------------------------------------------------------------------------------------
 say "Uygulamalar kuruluyor"

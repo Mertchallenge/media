@@ -12575,6 +12575,12 @@ def run_selftest() -> int:
             raise RuntimeError("PyQt6-WebEngine pakette yok")
     check("QtWebEngine", _web)
 
+    def _web_helper():
+        if is_frozen() and not any(ks_data.bundle_dir().rglob("QtWebEngineProcess")):
+            # Qt bu yardımcı uygulama olmadan WebEngine'i açarken uygulamayı çökertir
+            raise RuntimeError("QtWebEngineProcess pakette yok")
+    check("QtWebEngineProcess", _web_helper)
+
     def _logo():
         app = QApplication.instance() or QApplication(sys.argv[:1])
         p = club_logo_source_path()
