@@ -3626,6 +3626,32 @@ class ReviewPage(QWidget):
 # SAYFA: PAYLAŞIM — Drive link + mesaj listesi · İçerik dengesi · Sosyal medya boyutları
 # ==========================================================================================
 
+def webengine_pip_spec() -> str:
+    """Yüklü PyQt6 sürümüyle uyumlu PyQt6-WebEngine sürüm belirteci (örn. PyQt6 6.7.1 → PyQt6-WebEngine~=6.7.0)."""
+    try:
+        from PyQt6.QtCore import PYQT_VERSION_STR
+        return f"PyQt6-WebEngine~={'.'.join(PYQT_VERSION_STR.split('.')[:2])}.0"
+    except Exception:
+        return "PyQt6-WebEngine"
+
+
+class PipInstallWorker(QThread):
+    done_signal = pyqtSignal(bool, str)
+
+    def __init__(self, spec: str, parent=None):
+        super().__init__(parent)
+        self.spec = spec
+
+    def run(self):
+        try:
+            p = subprocess.run([sys.executable, "-m", "pip", "install", self.spec],
+                               capture_output=True, text=True, timeout=1200)
+            out = ((p.stdout or "") + "\n" + (p.stderr or "")).strip()
+            self.done_signal.emit(p.returncode == 0, out[-1200:])
+        except Exception as e:
+            self.done_signal.emit(False, str(e))
+
+
 if HAS_WEBENGINE:
     class InstagramPage(QWebEnginePage):
         """Önizlemede bir bağlantıya tıklanınca uygulama içinde gezinmek yerine tarayıcıda açar."""
@@ -3759,6 +3785,31 @@ class SharePage(QWidget):
     def _ig_open_browser(self):
         QDesktopServices.openUrl(QUrl(f"https://www.instagram.com/{self._ig_handle_text()}/"))
 
+    def _ig_install(self):
+        self.ig_install_btn.setEnabled(False)
+        self.ig_install_bar.setVisible(True)
+        self.ig_install_status.setText("Kuruluyor… (internet bağlantısı gerekir, lütfen bekle)")
+        self._pip_worker = PipInstallWorker(self.ig_spec)
+        self._pip_worker.done_signal.connect(self._ig_install_done)
+        self._pip_worker.start()
+
+    def _ig_install_done(self, ok: bool, output: str):
+        self.ig_install_bar.setVisible(False)
+        if ok:
+            self.ig_install_status.setText("Kurulum tamamlandı. Mini Instagram için uygulamayı yeniden başlat.")
+            self.ig_restart_btn.setVisible(True)
+        else:
+            self.ig_install_btn.setEnabled(True)
+            self.ig_install_status.setText("Kurulum başarısız oldu. Ayrıntı:\n" + output)
+
+    def _restart_app(self):
+        try:
+            subprocess.Popen([sys.executable] + sys.argv)
+        except Exception as e:
+            self.ig_install_status.setText(f"Yeniden başlatılamadı ({e}). Uygulamayı kapatıp elle aç.")
+            return
+        QApplication.quit()
+
     def _ig_reload(self):
         self.extra["instagram_handle"] = self._ig_handle_text()
         save_medya_extra(self.extra)
@@ -3772,20 +3823,42 @@ class SharePage(QWidget):
         self._ig_built = True
         if not HAS_WEBENGINE:
             card, c = self.win._card(margins=(26, 24, 26, 24), spacing=12)
-            c.addWidget(self.win._section_label("Mini Instagram için bir eklenti gerekli"))
-            msg = QLabel("Kocaelispor'un Instagram sayfasını uygulamanın içinde göstermek için Qt'nin web bileşeni gerekiyor. "
-                         "Terminalde şu komutu bir kez çalıştırıp uygulamayı yeniden aç:")
+            c.addWidget(self.win._section_label("Mini Instagram — tek seferlik kurulum"))
+            msg = QLabel("Kocaelispor'un Instagram sayfasını uygulamanın içinde göstermek için Qt'nin web bileşeni "
+                         "(PyQt6-WebEngine) gerekiyor. Aşağıdaki düğme onu bu uygulamanın kullandığı Python'a kurar; "
+                         "birkaç dakika sürebilir. Kurulum bitince uygulama kendini yeniden başlatır.")
             msg.setWordWrap(True)
             msg.setObjectName("noteText")
             c.addWidget(msg)
-            cmd = QLineEdit("pip install PyQt6-WebEngine")
-            cmd.setReadOnly(True)
-            c.addWidget(cmd)
-            alt = QPushButton("Şimdilik Instagram'ı tarayıcıda aç")
-            alt.setObjectName("smallBtn")
-            alt.setCursor(Qt.CursorShape.PointingHandCursor)
-            alt.clicked.connect(self._ig_open_browser)
-            c.addWidget(alt, 0, Qt.AlignmentFlag.AlignLeft)
+            self.ig_spec = webengine_pip_spec()
+            spec_lab = QLabel(f"Kurulacak: {self.ig_spec}")
+            spec_lab.setObjectName("dateSub")
+            c.addWidget(spec_lab)
+            self.ig_install_btn = QPushButton("Şimdi kur")
+            self.ig_install_btn.setObjectName("startBtn")
+            self.ig_install_btn.setFixedSize(180, 46)
+            self.ig_install_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.ig_install_btn.clicked.connect(self._ig_install)
+            c.addWidget(self.ig_install_btn, 0, Qt.AlignmentFlag.AlignLeft)
+            self.ig_install_bar = QProgressBar()
+            self.ig_install_bar.setRange(0, 0)
+            self.ig_install_bar.setTextVisible(False)
+            self.ig_install_bar.setFixedHeight(8)
+            self.ig_install_bar.setStyleSheet(
+                f"QProgressBar {{ background: {K_LINE}; border: none; border-radius: 4px; }}"
+                f"QProgressBar::chunk {{ background: {K_GREEN}; border-radius: 4px; }}")
+            self.ig_install_bar.setVisible(False)
+            c.addWidget(self.ig_install_bar)
+            self.ig_install_status = QLabel("")
+            self.ig_install_status.setObjectName("dateSub")
+            self.ig_install_status.setWordWrap(True)
+            c.addWidget(self.ig_install_status)
+            self.ig_restart_btn = QPushButton("Uygulamayı yeniden başlat")
+            self.ig_restart_btn.setObjectName("startBtn")
+            self.ig_restart_btn.setFixedSize(240, 46)
+            self.ig_restart_btn.clicked.connect(self._restart_app)
+            self.ig_restart_btn.setVisible(False)
+            c.addWidget(self.ig_restart_btn, 0, Qt.AlignmentFlag.AlignLeft)
             c.addStretch(1)
             self.ig_host.addWidget(card)
             return
