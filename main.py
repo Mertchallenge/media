@@ -2660,8 +2660,71 @@ def load_medya_extra() -> dict:
     return base
 
 
-def save_medya_extra(extra: dict):
-    write_json(MEDYA_EXTRA_PATH, extra)
+def save_medya_extra(extra: dict, keys=None):
+    """keys verilirse diskteki güncel dosyaya yalnız bu anahtarlar yazılır (eski kopyanın başka ayarları ezmesini önler)."""
+    if keys:
+        current = read_json(MEDYA_EXTRA_PATH, {})
+        if not isinstance(current, dict):
+            current = {}
+        for k in keys:
+            if k in extra:
+                current[k] = extra[k]
+        write_json(MEDYA_EXTRA_PATH, current)
+    else:
+        write_json(MEDYA_EXTRA_PATH, extra)
+
+
+# --- Paylaşım günlüğü: hangi antrenmanda hangi oyuncular sosyal medyada paylaşıldı ---------------
+SHARE_LOG_PATH = os.path.join(APP_DIR, "paylasim_gunlugu.json")
+
+
+def load_share_log() -> list:
+    """[{"date": "YYYY-MM-DD", "players": [...]}, ...] — en yeni tarih başta."""
+    data = read_json(SHARE_LOG_PATH, [])
+    out = []
+    if isinstance(data, list):
+        for e in data:
+            if isinstance(e, dict) and isinstance(e.get("players"), list) and isinstance(e.get("date"), str):
+                out.append({"date": e["date"], "players": [str(p) for p in e["players"]]})
+    out.sort(key=lambda e: e["date"], reverse=True)
+    return out
+
+
+def add_share_entry(day, players: list):
+    log = load_share_log()
+    iso = day.isoformat()
+    for e in log:                      # aynı gün tekrar kaydedilirse birleştir
+        if e["date"] == iso:
+            e["players"] = sorted(set(e["players"]) | set(players), key=turkish_lower)
+            break
+    else:
+        log.append({"date": iso, "players": sorted(set(players), key=turkish_lower)})
+    log.sort(key=lambda e: e["date"], reverse=True)
+    write_json(SHARE_LOG_PATH, log[:200])
+
+
+def remove_last_share_entry():
+    log = load_share_log()
+    if log:
+        write_json(SHARE_LOG_PATH, log[1:])
+
+
+def share_overview(log: list, universe: list, today, limit: int = 5) -> dict:
+    """Son paylaşılan set + en uzun süredir paylaşılmayan oyuncular ([(ad, gün|None)], None = hiç)."""
+    last_seen: dict = {}
+    for e in log:                      # log yeni→eski; ilk görülen en yeni tarihtir
+        try:
+            d = date.fromisoformat(e["date"])
+        except ValueError:
+            continue
+        for p in e["players"]:
+            last_seen.setdefault(p, d)
+    waiting = []
+    for n in universe:
+        d = last_seen.get(n)
+        waiting.append((n, None if d is None else (today - d).days))
+    waiting.sort(key=lambda t: (0, turkish_lower(t[0])) if t[1] is None else (1, -t[1], turkish_lower(t[0])))
+    return {"last": log[0] if log else None, "waiting": waiting[:limit]}
 
 
 def count_images(folder: str) -> int:
@@ -3713,7 +3776,7 @@ class InstagramPanel(QWidget):
 
     def reload(self):
         self.extra["instagram_handle"] = self._handle_text()
-        save_medya_extra(self.extra)
+        save_medya_extra(self.extra, keys=("instagram_handle",))
         if self._view is not None:
             self._view.setUrl(QUrl(f"https://www.instagram.com/{self._handle_text()}/embed/"))
 
@@ -4113,7 +4176,7 @@ class SharePage(QWidget):
 
     def _social_changed(self, *args):
         self.extra["social"] = self._social_settings()
-        save_medya_extra(self.extra)
+        save_medya_extra(self.extra, keys=("social",))
         self._refresh_social_summary()
 
     def _social_jobs(self) -> list:
@@ -4150,6 +4213,7 @@ class SharePage(QWidget):
             self.social_status.setText("İşlenecek fotoğraf bulunamadı.")
             return
         formats = [f for f in SOCIAL_FORMATS if f[0] in s["formats"]]
+        self.win.last_social_players = sorted({p for p, _ in jobs}, key=turkish_lower)
         out_root = os.path.join(base, SOCIAL_FOLDER_NAME)
         self._social_out = out_root
         self.social_bar.setRange(0, len(jobs) * len(formats))
@@ -4174,6 +4238,73 @@ class SharePage(QWidget):
         out = getattr(self, "_social_out", "")
         if out and os.path.isdir(out):
             QDesktopServices.openUrl(QUrl.fromLocalFile(out))
+
+
+class ShareLogDialog(QDialog):
+    """Sosyal medyada paylaşılan oyuncuları işaretleyip günlüğe kaydeder."""
+
+    def __init__(self, names: list, preselect: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Paylaşımı kaydet")
+        self.resize(460, 640)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 20, 22, 18)
+        lay.setSpacing(12)
+        title = QLabel("Hangi oyuncular paylaşıldı?")
+        title.setObjectName("pageTitle")
+        lay.addWidget(title)
+        info = QLabel("Instagram / X / Facebook'ta paylaştığın oyuncuları işaretle; tarih antrenman günü olsun.")
+        info.setObjectName("noteText")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        self.date_edit = QDateEdit()
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat("dd.MM.yyyy")
+        self.date_edit.setDate(QDate.currentDate())
+        self.date_edit.setMinimumHeight(34)
+        lay.addWidget(self.date_edit)
+        self.checks = []
+        inner = QWidget()
+        il = QVBoxLayout(inner)
+        il.setContentsMargins(0, 0, 0, 0)
+        il.setSpacing(4)
+        pre = set(preselect)
+        for n in sorted(names, key=turkish_lower):
+            cb = QCheckBox(n)
+            cb.setChecked(n in pre)
+            cb.toggled.connect(self._update_count)
+            il.addWidget(cb)
+            self.checks.append(cb)
+        il.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(inner)
+        lay.addWidget(scroll, 1)
+        self.count_lab = QLabel("")
+        self.count_lab.setObjectName("dateSub")
+        lay.addWidget(self.count_lab)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = QPushButton("İptal")
+        cancel.setObjectName("ghostBtn")
+        cancel.setFixedHeight(42)
+        cancel.clicked.connect(self.reject)
+        save = QPushButton("Kaydet")
+        save.setObjectName("startBtn")
+        save.setFixedSize(140, 42)
+        save.clicked.connect(self.accept)
+        row.addWidget(cancel)
+        row.addWidget(save)
+        lay.addLayout(row)
+        self._update_count()
+
+    def _update_count(self, *_):
+        self.count_lab.setText(f"Seçilen: {sum(1 for c in self.checks if c.isChecked())} oyuncu")
+
+    def result_data(self):
+        d = self.date_edit.date()
+        return date(d.year(), d.month(), d.day()), [c.text() for c in self.checks if c.isChecked()]
 
 
 # ==========================================================================================
@@ -4245,7 +4376,7 @@ class MatchdayDialog(QDialog):
         return f"{done}/{total}"
 
     def _save(self):
-        save_medya_extra(self.extra)
+        save_medya_extra(self.extra, keys=("matchday",))
 
     def _toggle(self, item_id: str, checked: bool):
         done = self.state.setdefault("done", [])
@@ -4737,6 +4868,7 @@ class MainWindow(QMainWindow):
 
         self.ref_folder = ""
         self.media_folder = ""
+        self.last_social_players = []
         self.work_folder = ""   # İnceleme / Paylaşım sayfalarının üzerinde çalıştığı çıktı (tarih) klasörü
         self.worker: ExtractionWorker | None = None
         self._output_folder = ""
@@ -5046,6 +5178,26 @@ class MainWindow(QMainWindow):
         mid.addWidget(self._build_birthday_card(), 1)
         layout.addLayout(mid)
 
+        track, t_layout = self._card(spacing=10)
+        t_head = QHBoxLayout()
+        t_head.addWidget(self._section_label("Paylaşım takibi"))
+        t_head.addStretch(1)
+        undo_btn = QPushButton("Son kaydı sil")
+        undo_btn.setObjectName("linkBtn")
+        undo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        undo_btn.clicked.connect(self._share_undo)
+        t_head.addWidget(undo_btn)
+        add_btn = QPushButton("+ Paylaşım kaydet")
+        add_btn.setObjectName("linkBtn")
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.clicked.connect(self._share_add)
+        t_head.addWidget(add_btn)
+        t_layout.addLayout(t_head)
+        self.track_body = QHBoxLayout()
+        self.track_body.setSpacing(24)
+        t_layout.addLayout(self.track_body)
+        layout.addWidget(track)
+
         fixture_card, f_layout = self._card(spacing=8)
         f_head = QHBoxLayout()
         f_head.addWidget(self._section_label("Fikstür"))
@@ -5351,7 +5503,101 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Ana sayfadaki kulüp kartları
     # ------------------------------------------------------------------
+    def _share_universe(self) -> list:
+        names = sorted(load_reference_counts(self.ref_folder).keys(), key=turkish_lower)
+        return names or [p["name"] for p in ROSTER]
+
+    def _share_add(self):
+        names = self._share_universe()
+        pre = [n for n in getattr(self, "last_social_players", []) if n in names]
+        if len(pre) > 12:
+            pre = []
+        dlg = ShareLogDialog(names, pre, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            day, players = dlg.result_data()
+            if players:
+                add_share_entry(day, players)
+            self._refresh_share_track()
+
+    def _share_undo(self):
+        log = load_share_log()
+        if not log:
+            return
+        e = log[0]
+        ans = QMessageBox.question(self, "Son kaydı sil",
+                                   f"{e['date']} tarihli kayıt ({len(e['players'])} oyuncu) silinsin mi?")
+        if ans == QMessageBox.StandardButton.Yes:
+            remove_last_share_entry()
+            self._refresh_share_track()
+
+    def _refresh_share_track(self):
+        clear_layout(self.track_body)
+        log = load_share_log()
+        if not log:
+            hint = QLabel("Henüz kayıt yok. Bir antrenman paylaşımını \"+ Paylaşım kaydet\" ile işaretleyince burada "
+                          "son paylaşılan oyuncular ve sırası gelenler görünür.")
+            hint.setObjectName("emptyHint")
+            hint.setWordWrap(True)
+            self.track_body.addWidget(hint)
+            return
+        ov = share_overview(log, self._share_universe(), date.today())
+        last = ov["last"]
+        # Sol: son paylaşılan set
+        left = QVBoxLayout()
+        left.setSpacing(8)
+        try:
+            d = date.fromisoformat(last["date"])
+            ds = f"{d.day} {TURKISH_MONTHS[d.month]}"
+        except ValueError:
+            ds = last["date"]
+        cap = QLabel(f"Son paylaşım · {ds} · {len(last['players'])} oyuncu")
+        cap.setObjectName("rowTitle")
+        left.addWidget(cap)
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        for i, n in enumerate(last["players"]):
+            cell = QVBoxLayout()
+            cell.setSpacing(3)
+            cell.addWidget(make_avatar_label(n, 40, "avatar"), 0, Qt.AlignmentFlag.AlignHCenter)
+            first = QLabel(n.split()[0] if n.split() else n)
+            first.setObjectName("dateSub")
+            first.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cell.addWidget(first)
+            holder = QWidget()
+            holder.setLayout(cell)
+            holder.setFixedWidth(74)
+            grid.addWidget(holder, i // 4, i % 4)
+        left.addLayout(grid)
+        left.addStretch(1)
+        self.track_body.addLayout(left, 3)
+        # Sağ: sırası gelenler
+        right = QVBoxLayout()
+        right.setSpacing(0)
+        cap2 = QLabel("Sırası gelenler")
+        cap2.setObjectName("rowTitle")
+        right.addWidget(cap2)
+        right.addSpacing(6)
+        for n, days in ov["waiting"]:
+            row = QFrame()
+            row.setObjectName("rowLine")
+            row.setFixedHeight(34)
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(8)
+            nm = ElidedLabel(n)
+            nm.setObjectName("bdName")
+            rl.addWidget(nm, 1)
+            if days is None:
+                chip = make_chip("hiç paylaşılmadı", K_AMBER, K_AMBER_BG)
+            else:
+                chip = make_chip(f"{days} gün önce", K_MUTED, "#1B2A22")
+            rl.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
+            right.addWidget(row)
+        right.addStretch(1)
+        self.track_body.addLayout(right, 2)
+
     def _refresh_club_cards(self):
+        self._refresh_share_track()
         self._refresh_next_match()
         self._refresh_fixture_rows()
         self._refresh_birthday_rows()
@@ -6252,6 +6498,8 @@ class MainWindow(QMainWindow):
     def _set_ref_folder(self, folder: str):
         self.ref_folder = folder
         self._set_path_label(self.ref_path_label, folder)
+        if hasattr(self, "track_body"):
+            self._refresh_share_track()
 
     def _set_media_folder(self, folder: str):
         self.media_folder = folder
