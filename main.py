@@ -12576,9 +12576,13 @@ def run_selftest() -> int:
     check("QtWebEngine", _web)
 
     def _web_helper():
-        if is_frozen() and not any(ks_data.bundle_dir().rglob("QtWebEngineProcess")):
-            # Qt bu yardımcı uygulama olmadan WebEngine'i açarken uygulamayı çökertir
-            raise RuntimeError("QtWebEngineProcess pakette yok")
+        if is_frozen():
+            # Qt yardımcıyı tam bu yolda arar; yoksa WebEngine açılırken uygulama çöker
+            helper = (Path(sys.executable).resolve().parent.parent / "Frameworks" / "PyQt6" / "Qt6" / "lib" /
+                      "QtWebEngineCore.framework" / "Helpers" / "QtWebEngineProcess.app" /
+                      "Contents" / "MacOS" / "QtWebEngineProcess")
+            if not helper.is_file():
+                raise RuntimeError(f"QtWebEngineProcess Qt'nin baktığı yolda yok: {helper}")
     check("QtWebEngineProcess", _web_helper)
 
     def _logo():
