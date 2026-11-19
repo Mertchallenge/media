@@ -134,6 +134,14 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QLineEdit, QComboBox, QDateEdit, QTimeEdit, QSpinBox,
     QDoubleSpinBox, QCheckBox, QPlainTextEdit, QProgressBar
 )
+try:  # İsteğe bağlı (Instagram önizlemesi): pip install PyQt6-WebEngine — QApplication'dan ÖNCE içe aktarılmalı
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+    from PyQt6.QtWebEngineCore import QWebEnginePage
+    HAS_WEBENGINE = True
+except Exception:
+    QWebEngineView = None
+    QWebEnginePage = None
+    HAS_WEBENGINE = False
 
 
 # ==========================================================================================
@@ -2646,7 +2654,7 @@ MATCHDAY_PHASES = [
 def load_medya_extra() -> dict:
     base = {
         "share_links": {}, "share_message": DEFAULT_SHARE_MESSAGE, "best_count": DEFAULT_BEST_COUNT,
-        "matchday": {},
+        "matchday": {}, "instagram_handle": "kocaelispor",
         "social": {"formats": ["Story", "Gonderi"], "mode": "Kırp", "logo": True,
                    "logo_pos": "Sağ alt", "logo_size": 12, "logo_kind": "KSmedya", "source": "Seçilenler"},
     }
@@ -3715,8 +3723,19 @@ class ReviewPage(QWidget):
 # SAYFA: PAYLAŞIM — Drive link + mesaj listesi · İçerik dengesi · Sosyal medya boyutları
 # ==========================================================================================
 
+if HAS_WEBENGINE:
+    class InstagramPage(QWebEnginePage):
+        """Önizlemede bir bağlantıya tıklanınca uygulama içinde gezinmek yerine tarayıcıda açar."""
+
+        def acceptNavigationRequest(self, url, nav_type, is_main_frame):
+            if nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
+                QDesktopServices.openUrl(url)
+                return False
+            return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+
 class SharePage(QWidget):
-    TABS = ("Sosyal medya", "İçerik dengesi")
+    TABS = ("Sosyal medya", "İçerik dengesi", "Instagram")
 
     def __init__(self, win):
         super().__init__()
@@ -3761,6 +3780,7 @@ class SharePage(QWidget):
         self.tabs = QStackedWidget()
         self.tabs.addWidget(self._build_social_tab())
         self.tabs.addWidget(self._build_balance_tab())
+        self.tabs.addWidget(self._build_instagram_tab())
         outer.addWidget(self.tabs, 1)
 
     def _set_tab(self, i: int):
@@ -3781,8 +3801,11 @@ class SharePage(QWidget):
         self._refresh_tab()
 
     def _refresh_tab(self):
-        if self.tabs.currentIndex() == 1:
+        i = self.tabs.currentIndex()
+        if i == 1:
             self._refresh_balance()
+        elif i == 2:
+            self._ensure_instagram()
         else:
             self._refresh_social_summary()
 
@@ -3853,6 +3876,92 @@ class SharePage(QWidget):
             QApplication.restoreOverrideCursor()
         self.sel_status.setText(f"{made} fotoğraf seçildi (oyuncu başına en fazla {n}).")
         self._refresh_social_summary()
+
+    # ---------------------------------------------------------------- Kocaelispor Instagram (mini görünüm)
+    def _build_instagram_tab(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(16)
+        bar, b = self.win._card(margins=(18, 12, 18, 12), spacing=8)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(QLabel("Hesap  @"))
+        self.ig_handle = QLineEdit(str(self.extra.get("instagram_handle") or "kocaelispor"))
+        self.ig_handle.setFixedWidth(220)
+        self.ig_handle.setMinimumHeight(34)
+        self.ig_handle.returnPressed.connect(self._ig_reload)
+        row.addWidget(self.ig_handle)
+        reload_btn = QPushButton("Yenile")
+        reload_btn.setObjectName("smallBtn")
+        reload_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        reload_btn.clicked.connect(self._ig_reload)
+        row.addWidget(reload_btn)
+        open_btn = QPushButton("Tarayıcıda aç")
+        open_btn.setObjectName("outlineSmall")
+        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_btn.clicked.connect(self._ig_open_browser)
+        row.addWidget(open_btn)
+        row.addStretch(1)
+        b.addLayout(row)
+        lay.addWidget(bar)
+        self.ig_host = QHBoxLayout()
+        self.ig_host.setContentsMargins(0, 0, 0, 0)
+        lay.addLayout(self.ig_host, 1)
+        self._ig_view = None
+        return page
+
+    def _ig_handle_text(self) -> str:
+        h = self.ig_handle.text().strip().lstrip("@").strip("/ ")
+        return h or "kocaelispor"
+
+    def _ig_open_browser(self):
+        QDesktopServices.openUrl(QUrl(f"https://www.instagram.com/{self._ig_handle_text()}/"))
+
+    def _ig_reload(self):
+        self.extra["instagram_handle"] = self._ig_handle_text()
+        save_medya_extra(self.extra)
+        if self._ig_view is not None:
+            self._ig_view.setUrl(QUrl(f"https://www.instagram.com/{self._ig_handle_text()}/embed/"))
+
+    def _ensure_instagram(self):
+        """Web görünümü ağır olduğu için ilk açılışta (tembel) kurulur."""
+        if self._ig_view is not None or getattr(self, "_ig_built", False):
+            return
+        self._ig_built = True
+        if not HAS_WEBENGINE:
+            card, c = self.win._card(margins=(26, 24, 26, 24), spacing=12)
+            c.addWidget(self.win._section_label("Mini Instagram için bir eklenti gerekli"))
+            msg = QLabel("Kocaelispor'un Instagram sayfasını uygulamanın içinde göstermek için Qt'nin web bileşeni gerekiyor. "
+                         "Terminalde şu komutu bir kez çalıştırıp uygulamayı yeniden aç:")
+            msg.setWordWrap(True)
+            msg.setObjectName("noteText")
+            c.addWidget(msg)
+            cmd = QLineEdit("pip install PyQt6-WebEngine")
+            cmd.setReadOnly(True)
+            c.addWidget(cmd)
+            alt = QPushButton("Şimdilik Instagram'ı tarayıcıda aç")
+            alt.setObjectName("smallBtn")
+            alt.setCursor(Qt.CursorShape.PointingHandCursor)
+            alt.clicked.connect(self._ig_open_browser)
+            c.addWidget(alt, 0, Qt.AlignmentFlag.AlignLeft)
+            c.addStretch(1)
+            self.ig_host.addWidget(card)
+            return
+        self.ig_host.addStretch(1)
+        phone = QFrame()
+        phone.setFixedWidth(450)
+        phone.setStyleSheet(f"QFrame {{ background: {K_CARD}; border: 1px solid {K_LINE2}; border-radius: 26px; }}")
+        pl = QVBoxLayout(phone)
+        pl.setContentsMargins(8, 12, 8, 12)
+        view = QWebEngineView()
+        view.setPage(InstagramPage(view))
+        view.page().setBackgroundColor(QColor(K_CARD))
+        view.setUrl(QUrl(f"https://www.instagram.com/{self._ig_handle_text()}/embed/"))
+        pl.addWidget(view)
+        self._ig_view = view
+        self.ig_host.addWidget(phone)
+        self.ig_host.addStretch(1)
 
     # ---------------------------------------------------------------- 2) İçerik dengesi
     def _build_balance_tab(self) -> QWidget:
