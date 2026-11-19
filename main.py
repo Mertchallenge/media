@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Güncelleme kontrolü artık GitHub'dan anında (önbelleksiz) okuyor; yeni sürümler hemen görünür."
+UPDATE_NOTES = "Instagram paneli: giriş duvarı çıkarsa düzgün bir uyarı gösterir, tarayıcı kimliği düzeltildi."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -3866,6 +3866,9 @@ class InstagramPanel(QWidget):
         self.extra["instagram_handle"] = self._handle_text()
         save_medya_extra(self.extra, keys=("instagram_handle",))
         if self._view is not None:
+            self._view.setVisible(True)
+            if getattr(self, "_wall", None) is not None:
+                self._wall.setVisible(False)
             self._view.setUrl(QUrl(f"https://www.instagram.com/{self._handle_text()}/embed/"))
 
     def _install(self):
@@ -3968,9 +3971,40 @@ class InstagramPanel(QWidget):
         script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
         script.setRunsOnSubFrames(True)
         page.scripts().insert(script)
+        # Instagram, "QtWebEngine" kimliğini bazen bot sayıp giriş duvarı gösteriyor; sıradan bir Chrome gibi görün
+        try:
+            page.profile().setHttpUserAgent(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+        except Exception:
+            pass
         view.setUrl(QUrl(f"https://www.instagram.com/{self._handle_text()}/embed/"))
+        view.loadFinished.connect(self._check_login_wall)
         self.host.addWidget(view)
         self._view = view
+        # Giriş duvarı çıkarsa görünümün yerine gösterilen uyarı
+        self._wall = QLabel("Instagram şu an önizlemeyi vermiyor (giriş sayfası açtı).\n"
+                            "Bir süre sonra \"Yenile\"ye bas ya da \"Tarayıcıda aç\"ı kullan.")
+        self._wall.setObjectName("noteText")
+        self._wall.setWordWrap(True)
+        self._wall.setVisible(False)
+        self.host.addWidget(self._wall)
+
+    def _check_login_wall(self, ok=True):
+        """Önizleme yerine Instagram giriş formu yüklendiyse çirkin formu gizleyip uyarı göster."""
+        view = self._view
+        if view is None:
+            return
+
+        def cb(text):
+            t = str(text or "")
+            blocked = ("Log into Instagram" in t) or ("Password" in t and "Log in" in t) or ("Şifre" in t and "Giriş" in t)
+            view.setVisible(not blocked)
+            self._wall.setVisible(blocked)
+        try:
+            view.page().runJavaScript("(document.body ? document.body.innerText : '').slice(0, 800)", cb)
+        except Exception:
+            pass
 
 
 def _news_age(dt) -> str:
