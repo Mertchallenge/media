@@ -40,6 +40,27 @@ fi
 "$PY" -c "import PyQt6, cv2, numpy, insightface, onnxruntime, certifi, cryptography" \
   || die "Eksik paket var. Önce: $PY -m pip install -r requirements.txt"
 
+# --- Logo dosyası bozuksa onarılır ---------------------------------------------------------
+# (kocaelispor_logo.png geçersiz/boş/başka biçimde olabiliyor; main.py içinde yedek kopya var)
+check_png() { sips -g pixelWidth "$1" >/dev/null 2>&1; }
+for f in kocaelispor_logo.png ksmedya_logo.png; do
+  if [ -f "$f" ] && ! check_png "$f"; then
+    echo "UYARI: $f geçerli bir görsel değil — onarılıyor (eskisi $f.bozuk olarak saklanır)"
+    mv "$f" "$f.bozuk"
+  fi
+done
+if [ ! -f kocaelispor_logo.png ]; then
+  "$PY" - <<'PYEOF' || die "kocaelispor_logo.png üretilemedi; geçerli bir PNG'yi bu adla proje klasörüne koy."
+import re, base64
+s = open("main.py", encoding="utf-8").read()
+m = re.search(r'CLUB_LOGO_BASE64\s*=\s*\(?\s*((?:"[^"]*"\s*)+)', s)
+data = base64.b64decode("".join(re.findall(r'"([^"]*)"', m.group(1))))
+assert data[:4] == b"\x89PNG"
+open("kocaelispor_logo.png", "wb").write(data)
+print("kocaelispor_logo.png main.py içindeki yedekten yeniden yazıldı")
+PYEOF
+fi
+
 # --- İkon -----------------------------------------------------------------------------------
 say "Uygulama ikonu hazırlanıyor"
 rm -rf build_icon.iconset icon.icns
