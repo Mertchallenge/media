@@ -77,7 +77,10 @@ iconutil -c icns build_icon.iconset -o icon.icns
 rm -rf build_icon.iconset
 
 # --- Ortak PyInstaller ayarları -------------------------------------------------------------
-DATA_ARGS=(--add-data "kocaelispor_logo.png:.")
+# Paketin sürümü: uygulama içi güncelleme, veri klasöründeki kodu yalnızca bundan YENİYSE kullanır
+"$PY" -c "import re;print(re.search(r'^APP_VERSION\s*=\s*\"([^\"]+)\"', open('main.py', encoding='utf-8').read(), re.M).group(1))" > bundle_version.txt
+echo "Paket sürümü: $(cat bundle_version.txt)"
+DATA_ARGS=(--add-data "kocaelispor_logo.png:." --add-data "bundle_version.txt:.")
 [ -f ksmedya_logo.png ] && DATA_ARGS+=(--add-data "ksmedya_logo.png:.")
 [ -d fonts ] && DATA_ARGS+=(--add-data "fonts:fonts")
 
@@ -90,8 +93,9 @@ say "MediaStaffKS.app derleniyor (birkaç dakika sürebilir)"
   --collect-all insightface \
   --collect-all onnxruntime \
   --hidden-import PyQt6.QtWebEngineWidgets --hidden-import PyQt6.QtWebEngineCore \
+  --hidden-import main --hidden-import ks_data \
   --exclude-module tkinter \
-  main.py
+  launcher.py
 
 say "Qt WebEngine yardımcı uygulaması denetleniyor"
 bash fix_webengine.sh dist/MediaStaffKS.app "$PY"

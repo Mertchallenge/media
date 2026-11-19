@@ -3,7 +3,7 @@ name: Build & release macOS app
 on:
   push:
     branches: [main]
-    paths: ["main.py", "ks_data.py", "admin.py", "build_mac.sh", "fix_webengine.sh", "requirements.txt", ".github/workflows/release.yml"]
+    paths: ["main.py", "launcher.py", "ks_data.py", "admin.py", "build_mac.sh", "fix_webengine.sh", "requirements.txt", ".github/workflows/release.yml"]
   workflow_dispatch: {}
 
 permissions:
@@ -60,7 +60,8 @@ jobs:
       - name: Build apps with PyInstaller
         if: steps.check.outputs.skip == 'false'
         run: |
-          DATA=(--add-data "kocaelispor_logo.png:." --add-data "ksmedya_logo.png:.")
+          echo "${{ steps.ver.outputs.version }}" > bundle_version.txt
+          DATA=(--add-data "kocaelispor_logo.png:." --add-data "ksmedya_logo.png:." --add-data "bundle_version.txt:.")
           [ -d fonts ] && DATA+=(--add-data "fonts:fonts")
           pyinstaller --noconfirm --clean --windowed --onedir --name MediaStaffKS \
             --icon icon.icns --osx-bundle-identifier tr.kocaelispor.mediastaffks \
@@ -68,8 +69,9 @@ jobs:
             --collect-data certifi --hidden-import certifi \
             --collect-all insightface --collect-all onnxruntime \
             --hidden-import PyQt6.QtWebEngineWidgets --hidden-import PyQt6.QtWebEngineCore \
+            --hidden-import main --hidden-import ks_data \
             --exclude-module tkinter \
-            main.py
+            launcher.py
           bash fix_webengine.sh dist/MediaStaffKS.app python3
           pyinstaller --noconfirm --windowed --onedir --name MediaStaffKS-Admin \
             --icon icon.icns --osx-bundle-identifier tr.kocaelispor.mediastaffks.admin \

@@ -69,27 +69,20 @@ Paket büyüktür (yüzlerce MB; insightface + onnxruntime + Qt WebEngine).
 
 ## Otomatik güncelleme nasıl çalışır?
 
-- `main.py` içindeki `APP_VERSION` sabiti, uygulamanın şu anki sürümünü tutar.
-- Uygulama açılışta GitHub'daki **en son release**'i (`v<sürüm>` etiketi) kontrol eder.
-- Daha yeni bir sürüm varsa kullanıcıya sorar; onaylarsa paketlenmiş `.app` sürümünde
-  yeni `.app`'i indirip kendini değiştirir ve yeniden başlar. `python3 main.py` ile
-  çalıştırılan sürümde ise sadece `main.py` dosyasını indirip üzerine yazar.
+- Paketlenmiş uygulama `launcher.py` ile başlar. `main.py` ve `ks_data.py` paketin içinde durur;
+  güncelleme bu iki dosyanın yenisini `~/Library/Application Support/MediaStaffKS/kod/` altına
+  indirir ve launcher, paketten **daha yeniyse** onu yükler. Yani `.app` yeniden derlenmez.
+- Uygulama açılışta GitHub `main` dalındaki `main.py` içindeki `APP_VERSION`'a bakar. Yerel sürümden
+  yüksekse "Yeni sürüm var" penceresi çıkar (`UPDATE_NOTES` metniyle); onaylanırsa indirir, doğrular
+  (sözdizimi denetimi), yerine koyar ve yeniden başlar. Ayarlar → Hakkında → *Güncellemeyi denetle*
+  elle de kontrol eder.
+- Yeni kod açılamazsa launcher paketin kendi sürümüne döner (`.../kod/` silinirse de aynı).
+- Yeni bir kütüphane/paketleme değişikliği gerekirse `main.py`'de `REQUIRES_BUNDLE` artırılır;
+  eski paket bunu uygulamaz ve "bash build_mac.sh ile yeniden kur" der.
+- `python3 main.py` ile çalıştırılan geliştirme sürümü aynı kontrolü yapar ve dosyaların üzerine yazar.
 
 ## Yeni bir sürüm yayınlamak
 
-1. `main.py` içindeki `APP_VERSION` değerini artır (örn. `"1.0.1"`).
-2. Değişiklikleri `main` dalına gönder (push).
-3. Yeni bir sürüm etiketi oluştur ve gönder:
-   ```
-   git tag v1.0.1
-   git push origin v1.0.1
-   ```
-4. GitHub Actions (`.github/workflows/release.yml`) otomatik olarak macOS üzerinde
-   `MediaStaffKS.app`'i derler, zip'ler ve bir **Release** olarak yayınlar.
-5. Kullanıcılar uygulamayı bir sonraki açılışta otomatik olarak bu sürüme güncelleyecek.
-
-## Not — Gatekeeper uyarısı
-
-Uygulama Apple tarafından imzalanmadığı (ücretli geliştirici hesabı gerektirir) için
-ilk kurulumda macOS "tanımlanamayan geliştirici" uyarısı gösterebilir. Kullanıcı
-uygulamaya sağ tıklayıp **Aç**'ı seçerek bu uyarıyı bir kerelik geçebilir.
+1. `main.py` içinde `APP_VERSION`'ı artır ve `UPDATE_NOTES`'a kısa bir not yaz.
+2. `main`'e push et. Uygulamalar bir sonraki açılışta güncellemeyi sunar.
+   (Yalnızca `main.py`/`ks_data.py` değişiklikleri için; yeni kütüphane gerekiyorsa `build_mac.sh`.)

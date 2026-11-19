@@ -8,3 +8,4 @@ icon.icns
 .DS_Store
 *.py.bak
 veri.json
+bundle_version.txt

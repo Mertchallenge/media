@@ -74,6 +74,7 @@ KURULUM (Apple Silicon / macOS için önerilen):
 """
 
 import os
+import ast
 import re
 import csv
 import sys
@@ -84,7 +85,6 @@ import shutil
 import json
 import traceback
 import tempfile
-import zipfile
 import subprocess
 import urllib.error
 import urllib.request
@@ -154,10 +154,16 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
+# Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
+UPDATE_NOTES = "Uygulama içi güncelleme: artık yeniden derlemeden, tek tıkla güncellenir."
+# Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
+# Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
+# "yeniden kur" der (bash build_mac.sh).
+REQUIRES_BUNDLE = 1
 UPDATE_REPO = "Mertchallenge/media"
-UPDATE_API_URL = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
-UPDATE_RAW_MAIN_URL = f"https://raw.githubusercontent.com/{UPDATE_REPO}/main/main.py"
+UPDATE_RAW_BASE = f"https://raw.githubusercontent.com/{UPDATE_REPO}/main/"
+UPDATE_FILES = ("main.py", "ks_data.py")   # güncellemeyle inen kod dosyaları
 UPDATE_LOG_PATH = os.path.join(os.path.expanduser("~"), ".kocaelispor_foto_ayiklama", "update_check.log")
 
 
@@ -1270,9 +1276,9 @@ def make_state_icon(name: str, off_color: str, on_color: str, size: int = 22) ->
 # ==========================================================================================
 # OTOMATİK GÜNCELLEME
 # ==========================================================================================
-# GitHub'daki en son sürümü kontrol eder. Paketlenmiş (.app) sürümde yeni bir .app indirip
-# kendini değiştirir ve yeniden başlatır; python3 main.py ile çalıştırılan sürümde ise
-# sadece main.py dosyasını indirip üzerine yazar ve uygulamayı yeniden başlatır.
+# GitHub'daki main dalından (main.py'deki APP_VERSION) en son sürümü kontrol eder. Yeni sürüm varsa
+# main.py + ks_data.py'yi indirir: .app'te veri klasöründeki "kod" katmanına (launcher.py oradan
+# yükler, paket yeniden derlenmez); python3 main.py'de dosyaların üzerine yazar. Sonra yeniden başlatır.
 
 def _version_tuple(v: str) -> tuple:
     v = v.strip().lstrip("vV")
@@ -1298,6 +1304,28 @@ def current_app_bundle_path():
     return None
 
 
+def _update_meta(text: str):
+    """main.py metninden (sürüm, gereken paket sürümü, notlar) okur."""
+    ver = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', text, re.M)
+    req = re.search(r'^REQUIRES_BUNDLE\s*=\s*(\d+)', text, re.M)
+    notes = ""
+    m = re.search(r'^UPDATE_NOTES\s*=\s*(.+)$', text, re.M)
+    if m:
+        try:
+            notes = str(ast.literal_eval(m.group(1).strip()))
+        except Exception:
+            notes = ""
+    return (ver.group(1) if ver else ""), (int(req.group(1)) if req else 1), notes
+
+
+def overlay_dir() -> Path:
+    """Paketlenmiş uygulamada güncellenen kodun indirildiği klasör (launcher.py buradan yükler)."""
+    return ks_data.user_data_dir() / "kod"
+
+
+RUNNING_BUNDLE_API = int(os.environ.get("MEDIASTAFF_BUNDLE_API", "0") or 0)   # launcher.py ayarlar
+
+
 class UpdateCheckWorker(QThread):
     found = pyqtSignal(dict)
     none_found = pyqtSignal()
@@ -1306,174 +1334,136 @@ class UpdateCheckWorker(QThread):
     def run(self):
         _log_update_event(f"kontrol başladı (yerel sürüm {APP_VERSION}, frozen={is_frozen()})")
         try:
+            # Sürüm bilgisi dosyanın başında; tamamını indirmeye gerek yok (Range desteklenmezse hepsi gelir)
             request = urllib.request.Request(
-                UPDATE_API_URL, headers={"Accept": "application/vnd.github+json",
-                                          "User-Agent": "MediaStaffKS-Updater"}
-            )
+                UPDATE_RAW_BASE + "main.py?t=" + str(int(time.time())),
+                headers={"User-Agent": "MediaStaffKS-Updater", "Range": "bytes=0-24575"})
             with urllib.request.urlopen(request, timeout=15, context=_update_ssl_context()) as response:
-                data = json.loads(response.read().decode("utf-8"))
+                head = response.read().decode("utf-8", "replace")
         except Exception as e:
             _log_update_event(f"kontrol HATASI: {e!r}")
             self.failed.emit(str(e))
             return
 
-        remote_tag = str(data.get("tag_name", "")).strip()
-        _log_update_event(f"kontrol bitti, uzak sürüm: {remote_tag!r}")
-        if not remote_tag:
+        remote_ver, req_bundle, notes = _update_meta(head)
+        _log_update_event(f"kontrol bitti, uzak sürüm: {remote_ver!r}")
+        if not remote_ver or _version_tuple(remote_ver) <= _version_tuple(APP_VERSION):
             self.none_found.emit()
             return
-        if _version_tuple(remote_tag) <= _version_tuple(APP_VERSION):
-            self.none_found.emit()
-            return
-
-        zip_url = ""
-        for asset in data.get("assets", []) or []:
-            name = str(asset.get("name", ""))
-            if name.lower().endswith(".zip") and "admin" not in name.lower():
-                zip_url = asset.get("browser_download_url", "")
-                break
-
-        self.found.emit({
-            "tag": remote_tag,
-            "notes": str(data.get("body", "") or ""),
-            "zip_url": zip_url,
-        })
+        self.found.emit({"version": remote_ver, "notes": notes, "requires_bundle": req_bundle})
 
 
 class UpdateDownloadWorker(QThread):
     progress = pyqtSignal(str)
-    done = pyqtSignal(str)       # geçici dosya/klasör yolu
+    done = pyqtSignal(str)       # indirilen dosyaların geçici klasörü
     failed = pyqtSignal(str)
-
-    def __init__(self, url: str, mode: str, parent=None):
-        super().__init__(parent)
-        self.url = url
-        self.mode = mode  # "zip" veya "py"
 
     def run(self):
         try:
             tmp_dir = Path(tempfile.mkdtemp(prefix="mediastaffks_update_"))
-            request = urllib.request.Request(self.url, headers={"User-Agent": "MediaStaffKS-Updater"})
-            self.progress.emit("İndiriliyor…")
-            with urllib.request.urlopen(request, timeout=120, context=_update_ssl_context()) as response:
-                payload = response.read()
-
-            if self.mode == "zip":
-                zip_path = tmp_dir / "update.zip"
-                zip_path.write_bytes(payload)
-                self.progress.emit("Açılıyor…")
-                done = False
-                if sys.platform == "darwin" and shutil.which("ditto"):
-                    # .app içindeki sembolik bağlar ve çalıştırma izinleri yalnız ditto ile korunur
-                    done = subprocess.run(["ditto", "-x", "-k", str(zip_path), str(tmp_dir)],
-                                          capture_output=True).returncode == 0
-                if not done:
-                    with zipfile.ZipFile(zip_path) as zf:
-                        zf.extractall(tmp_dir)
-                self.done.emit(str(tmp_dir))
-            else:
-                py_path = tmp_dir / "main.py"
-                py_path.write_bytes(payload)
-                self.done.emit(str(py_path))
+            for name in UPDATE_FILES:
+                self.progress.emit(f"İndiriliyor: {name}")
+                request = urllib.request.Request(
+                    UPDATE_RAW_BASE + name + "?t=" + str(int(time.time())),
+                    headers={"User-Agent": "MediaStaffKS-Updater"})
+                with urllib.request.urlopen(request, timeout=60, context=_update_ssl_context()) as response:
+                    payload = response.read()
+                text = payload.decode("utf-8")
+                compile(text, name, "exec")          # bozuk/yarım indirmeyi uygulamadan yakala
+                if name == "main.py" and not _update_meta(text)[0]:
+                    raise RuntimeError("main.py sürüm bilgisi okunamadı")
+                (tmp_dir / name).write_bytes(payload)
+            self.done.emit(str(tmp_dir))
         except Exception as e:
             self.failed.emit(str(e))
 
 
-def _apply_frozen_update(extracted_dir: str, parent_window) -> bool:
+def _restart_app(parent_window):
+    """Güncelleme sonrası uygulamayı yeniden başlatır."""
     app_bundle = current_app_bundle_path()
-    if app_bundle is None:
-        QMessageBox.warning(parent_window, "Güncelleme", "Uygulama paketinin yolu bulunamadı.")
-        return False
-
-    new_app = None
-    for item in Path(extracted_dir).glob("*.app"):
-        new_app = item
-        break
-    if new_app is None:
-        QMessageBox.warning(parent_window, "Güncelleme", "İndirilen pakette .app bulunamadı.")
-        return False
-
-    script_path = Path(tempfile.gettempdir()) / "mediastaffks_apply_update.sh"
-    script_path.write_text(f"""#!/bin/bash
+    if app_bundle is not None:
+        script_path = Path(tempfile.gettempdir()) / "mediastaffks_restart.sh"
+        script_path.write_text(f"""#!/bin/bash
 sleep 1
-rm -rf "{app_bundle}"
-mv "{new_app}" "{app_bundle}"
-sleep 0.5
-open "{app_bundle}"
+open -n "{app_bundle}"
 """)
-    os.chmod(script_path, 0o755)
-    subprocess.Popen(["/bin/bash", str(script_path)],
-                      start_new_session=True,
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    QApplication.quit()
-    os._exit(0)
+        os.chmod(script_path, 0o755)
+        subprocess.Popen(["/bin/bash", str(script_path)], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        QApplication.quit()
+        os._exit(0)
+    python = sys.executable
+    os.execv(python, [python] + ([str(Path(__file__).resolve())] if not is_frozen() else []))
+
+
+def _install_update(tmp_dir: str, parent_window) -> bool:
+    """İndirilen dosyaları yerine koyup yeniden başlatır.
+    .app'te: veri klasöründeki 'kod' katmanına (paket değişmez); python3 main.py'de: dosyaların üzerine."""
+    try:
+        dest = overlay_dir() if is_frozen() else Path(__file__).resolve().parent
+        dest.mkdir(parents=True, exist_ok=True)
+        staged = []
+        for name in UPDATE_FILES:
+            target = dest / name
+            if not is_frozen() and target.is_file():
+                shutil.copyfile(target, target.with_suffix(".py.bak"))
+            new_path = target.with_suffix(".py.new")
+            shutil.copyfile(Path(tmp_dir) / name, new_path)
+            staged.append((new_path, target))
+        for new_path, target in staged:
+            os.replace(new_path, target)
+    except Exception as e:
+        QMessageBox.warning(parent_window, "Güncelleme", f"Dosyalar güncellenemedi:\n{e}")
+        return False
+    _log_update_event("güncelleme uygulandı, yeniden başlatılıyor")
+    QMessageBox.information(parent_window, "Güncellendi", "Güncelleme indirildi. Uygulama yeniden başlatılıyor…")
+    _restart_app(parent_window)
     return True
 
 
-def _apply_script_update(new_main_py_path: str, parent_window) -> bool:
-    try:
-        current_path = Path(__file__).resolve()
-        backup_path = current_path.with_suffix(".py.bak")
-        shutil.copyfile(current_path, backup_path)
-        shutil.copyfile(new_main_py_path, current_path)
-    except Exception as e:
-        QMessageBox.warning(parent_window, "Güncelleme", f"Dosya güncellenemedi:\n{e}")
-        return False
-
-    QMessageBox.information(parent_window, "Güncellendi",
-                             "Güncelleme indirildi. Uygulama yeniden başlatılıyor…")
-    python = sys.executable
-    os.execv(python, [python, str(current_path)])
-    return True  # buraya ulaşılmaz
-
-
-def start_update_check(parent_window):
-    """Arka planda GitHub'daki en son sürümü kontrol eder; bulursa kullanıcıya sorar."""
+def start_update_check(parent_window, manual: bool = False):
+    """Arka planda GitHub'daki en son sürümü kontrol eder; bulursa kullanıcıya sorar.
+    manual=True: kullanıcı kendisi istediyse 'güncel' / hata durumlarını da bildirir."""
     worker = UpdateCheckWorker(parent_window)
     parent_window._update_worker = worker  # GC'ye karşı referans
 
     def on_found(info: dict):
-        tag = info["tag"]
+        ver = info["version"]
+        if is_frozen() and info["requires_bundle"] > RUNNING_BUNDLE_API:
+            QMessageBox.information(
+                parent_window, "Yeni sürüm var",
+                f"MediaStaffKS {ver} çıktı, ama bu sürüm uygulamanın yeniden kurulmasını gerektiriyor.\n"
+                "Proje klasöründe şunu çalıştır:  bash build_mac.sh")
+            return
         notes = info["notes"].strip()
         extra = f"\n\n{notes}" if notes else ""
         box = QMessageBox(parent_window)
         box.setIcon(QMessageBox.Icon.Information)
         box.setWindowTitle("Yeni sürüm var")
-        box.setText(f"MediaStaffKS {tag} kullanılabilir (şu an {APP_VERSION}).\n"
+        box.setText(f"MediaStaffKS {ver} kullanılabilir (şu an {APP_VERSION}).\n"
                     f"Şimdi güncellensin mi?{extra}")
         box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         box.setDefaultButton(QMessageBox.StandardButton.Yes)
         if box.exec() != QMessageBox.StandardButton.Yes:
             return
 
-        frozen = is_frozen()
-        if frozen and not info["zip_url"]:
-            QMessageBox.warning(parent_window, "Güncelleme",
-                                 "Bu sürüm için indirilebilir bir paket bulunamadı.")
-            return
-
-        url = info["zip_url"] if frozen else UPDATE_RAW_MAIN_URL
-        mode = "zip" if frozen else "py"
-        dl = UpdateDownloadWorker(url, mode, parent_window)
+        dl = UpdateDownloadWorker(parent_window)
         parent_window._update_download_worker = dl
-
-        def on_done(path: str):
-            if frozen:
-                _apply_frozen_update(path, parent_window)
-            else:
-                _apply_script_update(path, parent_window)
-
-        def on_failed(err: str):
-            QMessageBox.warning(parent_window, "Güncelleme", f"İndirme başarısız:\n{err}")
-
-        dl.done.connect(on_done)
-        dl.failed.connect(on_failed)
+        dl.done.connect(lambda path: _install_update(path, parent_window))
+        dl.failed.connect(lambda err: QMessageBox.warning(parent_window, "Güncelleme", f"İndirme başarısız:\n{err}"))
         dl.start()
+
+    def on_none():
+        if manual:
+            QMessageBox.information(parent_window, "Güncelleme", f"MediaStaffKS güncel (sürüm {APP_VERSION}).")
 
     def on_failed(err: str):
         print(f"[güncelleme kontrolü] atlanıyor: {err}", file=sys.stderr)
+        if manual:
+            QMessageBox.warning(parent_window, "Güncelleme", f"Güncelleme kontrol edilemedi:\n{err}")
 
     worker.found.connect(on_found)
+    worker.none_found.connect(on_none)
     worker.failed.connect(on_failed)
     worker.start()
 
@@ -6929,6 +6919,12 @@ class MainWindow(QMainWindow):
         open_data_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_data_btn.clicked.connect(self._open_user_data_dir)
         b_layout.addWidget(open_data_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        upd_btn = QPushButton("Güncellemeyi denetle")
+        upd_btn.setObjectName("ghostBtn")
+        upd_btn.setFixedHeight(38)
+        upd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        upd_btn.clicked.connect(lambda: start_update_check(self, manual=True))
+        b_layout.addWidget(upd_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(about)
         layout.addStretch(1)
 
