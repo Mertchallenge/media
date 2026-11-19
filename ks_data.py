@@ -469,3 +469,72 @@ def tm_sync(ssl_context=None, today: "date | None" = None, html: "str | None" = 
         return {"matches": [], "error": str(e) or e.__class__.__name__, "html": "", "season": season}
     matches = tm_parse(html)
     return {"matches": matches, "error": tm_validate(matches, season), "html": html, "season": season}
+
+
+# ==========================================================================================
+#  HAFTALIK PROGRAM -> TAKVİM (.ics)  (Mac Takvim / widget'ı ve bildirimleri için)
+# ==========================================================================================
+import hashlib
+from datetime import datetime, timedelta
+
+PROGRAM_KIND_MINUTES = {"meal": 60, "gym": 15, "training": 90, "match": 120, "meeting": 30, "camp": 30}
+PROGRAM_ALARM_KINDS = {"training", "match", "meeting", "camp"}   # 15 dk önce hatırlat
+
+
+def _ics_escape(text: str) -> str:
+    return (text or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def _ics_fold(line: str) -> str:
+    raw = line.encode("utf-8")
+    if len(raw) <= 74:
+        return line
+    out, cur = [], b""
+    for ch in line:
+        b = ch.encode("utf-8")
+        if len(cur) + len(b) > (74 if not out else 73):
+            out.append(cur.decode("utf-8"))
+            cur = b
+        else:
+            cur += b
+    out.append(cur.decode("utf-8"))
+    return "\r\n ".join(out)
+
+
+def programs_to_ics(programs: list, today: "date | None" = None) -> str:
+    """Bugünden itibaren olan program satırlarını iCalendar metnine çevirir (satır yoksa boş metin).
+    UID sabit olduğundan aynı dosya yeniden içe aktarılınca etkinlikler çoğalmaz, güncellenir."""
+    today_iso = (today or date.today()).isoformat()
+    stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    events = []
+    for pr in programs:
+        for it in pr.get("items", []):
+            if it.get("date", "") < today_iso:
+                continue
+            d = date.fromisoformat(it["date"])
+            title = it.get("title", "")
+            uid = hashlib.sha1(f"{it['date']}|{it.get('time','')}|{title}".encode("utf-8")).hexdigest()[:20] + "@mediastaffks"
+            ev = ["BEGIN:VEVENT", f"UID:{uid}", f"DTSTAMP:{stamp}"]
+            tm = it.get("time") or ""
+            if tm and re.match(r"^\d{2}:\d{2}$", tm):
+                start = datetime.combine(d, datetime.strptime(tm, "%H:%M").time())
+                end = start + timedelta(minutes=PROGRAM_KIND_MINUTES.get(it.get("kind", ""), 60))
+                ev += [f"DTSTART:{start.strftime('%Y%m%dT%H%M%S')}", f"DTEND:{end.strftime('%Y%m%dT%H%M%S')}"]
+            else:                                   # saatsiz (ör. İzin): tüm gün
+                ev += [f"DTSTART;VALUE=DATE:{d.strftime('%Y%m%d')}", f"DTEND;VALUE=DATE:{(d + timedelta(days=1)).strftime('%Y%m%d')}"]
+            ev.append("SUMMARY:" + _ics_escape(title))
+            sub = " · ".join(x for x in (pr.get("title", ""), pr.get("subtitle", "")) if x)
+            if sub:
+                ev.append("DESCRIPTION:" + _ics_escape(sub))
+            if it.get("kind") in PROGRAM_ALARM_KINDS and tm:
+                ev += ["BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:" + _ics_escape(title), "TRIGGER:-PT15M", "END:VALARM"]
+            ev.append("END:VEVENT")
+            events.append(ev)
+    if not events:
+        return ""
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//MediaStaffKS//Program//TR", "CALSCALE:GREGORIAN",
+             "METHOD:PUBLISH", "X-WR-CALNAME:Kocaelispor Program"]
+    for ev in events:
+        lines += ev
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(_ics_fold(l) for l in lines) + "\r\n"

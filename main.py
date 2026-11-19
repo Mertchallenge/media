@@ -131,7 +131,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QTextEdit, QFileDialog, QFrame, QMessageBox, QDialog,
     QSlider, QScrollArea, QAbstractButton, QSizePolicy, QToolButton, QButtonGroup,
-    QStackedWidget, QLineEdit, QComboBox, QDateEdit, QTimeEdit, QSpinBox,
+    QStackedWidget, QLineEdit, QComboBox, QDateEdit, QTimeEdit, QSpinBox, QSystemTrayIcon, QMenu,
     QDoubleSpinBox, QCheckBox, QPlainTextEdit, QProgressBar
 )
 try:  # İsteğe bağlı (Instagram önizlemesi): pip install PyQt6-WebEngine — QApplication'dan ÖNCE içe aktarılmalı
@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.4.0"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Ana sayfa: Paylaşım takibinden \"sırası gelenler\" kaldırıldı, iki kart eşit yükseklikte."
+UPDATE_NOTES = "Program için menü çubuğu simgesi, hep üstte duran mini pencere ve Mac Takvim'e aktarma eklendi."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -5372,6 +5372,156 @@ def player_label(pid: str) -> str:
     return p["name"] if p else "—"
 
 
+
+# ==========================================================================================
+# MİNİ PROGRAM PENCERESİ (masaüstünde hep üstte duran küçük "widget") + menü çubuğu simgesi
+# ==========================================================================================
+PROGRAM_MINI_STATE = os.path.join(APP_DIR, "mini_program.json")
+
+
+def program_today_items() -> tuple:
+    """(bugünün program satırları saate göre sıralı, program alt başlığı)"""
+    today_iso = date.today().isoformat()
+    for pr in PROGRAMS:
+        todays = [i for i in pr["items"] if i["date"] == today_iso]
+        if todays:
+            return sorted(todays, key=lambda i: i.get("time") or "99:99"), pr.get("subtitle", "")
+    return [], ""
+
+
+def program_next_index(items: list) -> int:
+    """Şimdiden sonraki (ya da şu an başlayan) ilk satırın sırası; hepsi geçtiyse -1."""
+    now = datetime.now().strftime("%H:%M")
+    for idx, it in enumerate(items):
+        if it.get("time") and it["time"] >= now:
+            return idx
+    return -1
+
+
+class ProgramMiniWindow(QWidget):
+    """Çerçevesiz, her zaman üstte duran, sürüklenebilir küçük pencere: bugünün programı."""
+    closed_signal = pyqtSignal()
+
+    def __init__(self, style_map: dict):
+        super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.style_map = style_map
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)   # uygulama arkadayken de görünsün
+        except AttributeError:
+            pass
+        self.setFixedWidth(270)
+        self._drag = None
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.frame = QFrame()
+        self.frame.setObjectName("miniFrame")
+        self.frame.setStyleSheet(f"QFrame#miniFrame {{ background: {K_BG}; border: 1px solid {K_GREEN}; border-radius: 16px; }}")
+        outer.addWidget(self.frame)
+        self.lay = QVBoxLayout(self.frame)
+        self.lay.setContentsMargins(12, 10, 12, 12)
+        self.lay.setSpacing(6)
+        self.timer = QTimer(self)
+        self.timer.setInterval(30 * 1000)
+        self.timer.timeout.connect(self.refresh)
+        self.refresh()
+
+    def refresh(self):
+        clear_layout(self.lay)
+        items, subtitle = program_today_items()
+        nxt = program_next_index(items)
+        head = QHBoxLayout()
+        d = date.today()
+        title = QLabel(f"{DAYS_TR[d.weekday()][:3]} {d.day} {TURKISH_MONTHS[d.month]}")
+        title.setStyleSheet(f"color: {K_GREEN_HI}; font-weight: 700; background: transparent; border: none;")
+        head.addWidget(title)
+        if subtitle:
+            sub = QLabel(subtitle)
+            sub.setStyleSheet(f"color: {K_MUTED}; background: transparent; border: none;")
+            head.addWidget(sub)
+        head.addStretch(1)
+        close = QPushButton("×")
+        close.setFixedSize(22, 22)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(f"QPushButton {{ color: {K_MUTED}; background: transparent; border: none; font-size: 16px; }}"
+                            f"QPushButton:hover {{ color: {K_TEXT}; }}")
+        close.clicked.connect(self.hide_and_remember)
+        head.addWidget(close)
+        self.lay.addLayout(head)
+        if not items:
+            hint = QLabel("Bugün için program yok.")
+            hint.setStyleSheet(f"color: {K_MUTED}; background: transparent; border: none;")
+            self.lay.addWidget(hint)
+        for idx, it in enumerate(items):
+            fg, bg, bd = self.style_map.get(it.get("kind", "meal"), self.style_map["meal"])
+            done = nxt != -1 and idx < nxt or (nxt == -1 and bool(it.get("time")))
+            row = QFrame()
+            row.setObjectName("miniRow")
+            border = K_GREEN_HI if idx == nxt else bd
+            row.setStyleSheet(f"QFrame#miniRow {{ background: {bg}; border: {2 if idx == nxt else 1}px solid {border}; border-radius: 10px; }}")
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(9, 5, 9, 5)
+            rl.setSpacing(9)
+            t = QLabel(it.get("time") or "Gün boyu")
+            t.setFixedWidth(42)
+            n = QLabel(it.get("title", ""))
+            n.setWordWrap(True)
+            t.setStyleSheet(f"color: {K_DIM if done else fg}; font-weight: 700; background: transparent; border: none;")
+            n.setStyleSheet(f"color: {K_DIM if done else K_TEXT}; background: transparent; border: none;")
+            rl.addWidget(t)
+            rl.addWidget(n, 1)
+            self.lay.addWidget(row)
+        self.adjustSize()
+
+    def toggle(self):
+        if self.isVisible():
+            self.hide_and_remember()
+        else:
+            self.show_and_remember()
+
+    def show_and_remember(self):
+        self.refresh()
+        self.timer.start()
+        self.show()
+        self.raise_()
+        self._save(True)
+
+    def hide_and_remember(self):
+        self.timer.stop()
+        self.hide()
+        self._save(False)
+        self.closed_signal.emit()
+
+    def restore_position(self):
+        st = read_json(PROGRAM_MINI_STATE, {})
+        screen = QApplication.primaryScreen()
+        geo = screen.availableGeometry() if screen is not None else None
+        x, y = st.get("x"), st.get("y")
+        if isinstance(x, int) and isinstance(y, int) and geo is not None and geo.adjusted(-40, -40, 40, 40).contains(x, y):
+            self.move(x, y)
+        elif geo is not None:
+            self.move(geo.right() - self.width() - 24, geo.top() + 60)
+        return bool(st.get("open"))
+
+    def _save(self, is_open: bool):
+        write_json(PROGRAM_MINI_STATE, {"open": is_open, "x": self.x(), "y": self.y()})
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag is not None:
+            self._drag = None
+            self._save(self.isVisible())
+
+
 class MainWindow(QMainWindow):
     MAX_LOG_ROWS = 250
     switch_requested = pyqtSignal()
@@ -5441,6 +5591,7 @@ class MainWindow(QMainWindow):
         self._tm_timer.timeout.connect(self._tm_auto)
         self._tm_timer.start()
         QTimer.singleShot(4000, self._tm_auto)
+        self._init_program_widgets()
 
     # ==================================================================
     # FİKSTÜR: TRANSFERMARKT OTOMATİK SENKRON
@@ -6784,6 +6935,14 @@ class MainWindow(QMainWindow):
             b.setFixedHeight(34)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             head.addWidget(b)
+        mini_btn = QPushButton("Mini pencere")
+        cal_btn = QPushButton("Takvim'e aktar")
+        for b, fn in ((mini_btn, lambda: self.prog_mini.toggle()), (cal_btn, self._export_program_ics)):
+            b.setObjectName("ghostBtn")
+            b.setFixedHeight(34)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(fn)
+            head.addWidget(b)
         self.prog_prev.clicked.connect(lambda: self._shift_program(-1))
         self.prog_next.clicked.connect(lambda: self._shift_program(1))
         layout.addLayout(head)
@@ -6811,6 +6970,81 @@ class MainWindow(QMainWindow):
         if PROGRAMS and self.prog_index is not None:
             self.prog_index = max(0, min(len(PROGRAMS) - 1, self.prog_index + delta))
             self._refresh_program_page(keep_index=True)
+
+    # ==================================================================
+    # PROGRAM "WIDGET"I: menü çubuğu simgesi + mini pencere + Takvim'e aktarım
+    # ==================================================================
+    def _init_program_widgets(self):
+        self.prog_mini = ProgramMiniWindow(self.PROGRAM_KIND_STYLE)
+        self.prog_tray = None
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            pix = get_club_logo_pixmap(44)
+            self.prog_tray = QSystemTrayIcon(QIcon(pix) if pix is not None else QIcon(), self)
+            self.prog_menu = QMenu()
+            self.prog_menu.aboutToShow.connect(self._fill_tray_menu)
+            self.prog_tray.setContextMenu(self.prog_menu)
+            self.prog_tray.setToolTip("MediaStaffKS · Bugünün programı")
+            self.prog_tray.show()
+        if self.prog_mini.restore_position():
+            QTimer.singleShot(1500, self.prog_mini.show_and_remember)
+        self._tray_timer = QTimer(self)
+        self._tray_timer.setInterval(60 * 1000)
+        self._tray_timer.timeout.connect(self._update_tray_tooltip)
+        self._tray_timer.start()
+        self._update_tray_tooltip()
+
+    def _update_tray_tooltip(self):
+        if self.prog_tray is None:
+            return
+        items, _ = program_today_items()
+        nxt = program_next_index(items)
+        if nxt != -1:
+            it = items[nxt]
+            self.prog_tray.setToolTip(f"Sıradaki: {it.get('time') or ''} {it.get('title', '')}".strip())
+        else:
+            self.prog_tray.setToolTip("MediaStaffKS · Bugün için başka program yok")
+
+    def _fill_tray_menu(self):
+        menu = self.prog_menu
+        menu.clear()
+        items, subtitle = program_today_items()
+        nxt = program_next_index(items)
+        head = menu.addAction(f"Bugünün programı{' · ' + subtitle if subtitle else ''}")
+        head.setEnabled(False)
+        if not items:
+            menu.addAction("Bugün için program yok").setEnabled(False)
+        for idx, it in enumerate(items):
+            mark = "▶ " if idx == nxt else "    "
+            menu.addAction(f"{mark}{it.get('time') or 'Gün boyu'}   {it.get('title', '')}").setEnabled(False)
+        menu.addSeparator()
+        menu.addAction("Mini pencereyi göster / gizle", self.prog_mini.toggle)
+        menu.addAction("Haftalık programı aç", self._show_program_page)
+        menu.addAction("Takvim'e aktar (.ics)", self._export_program_ics)
+        menu.addSeparator()
+        menu.addAction("Ana pencereyi göster", self._show_main_window)
+
+    def _show_main_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _show_program_page(self):
+        self._show_main_window()
+        self._go_to(PAGE_PROGRAM)
+
+    def _export_program_ics(self):
+        text = ks_data.programs_to_ics(PROGRAMS)
+        if not text:
+            QMessageBox.information(self, "Takvim", "Bugünden itibaren aktarılacak program satırı yok.")
+            return
+        path = os.path.join(str(ks_data.user_data_dir()), "MediaStaffKS-Program.ics")
+        try:
+            with open(path, "w", encoding="utf-8", newline="") as fh:
+                fh.write(text)
+        except OSError as e:
+            QMessageBox.warning(self, "Takvim", f"Dosya yazılamadı:\n{e}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))   # Takvim açılır ve hangi takvime ekleneceğini sorar
 
     def _refresh_today_program(self):
         """Ana sayfadaki kart: yalnızca BUGÜNÜN programı."""
@@ -7655,6 +7889,16 @@ class MainWindow(QMainWindow):
             self.worker.wait(3000)
         for w in list(self._ai_workers):
             w.wait(1500)
+        try:                                    # mini pencere ve menü çubuğu simgesi ana pencereyle birlikte kapanır
+            was_open = self.prog_mini.isVisible()
+            self.prog_mini.timer.stop()
+            self.prog_mini.hide()
+            if was_open:
+                self.prog_mini._save(True)      # bir sonraki açılışta yine açık gelsin
+            if self.prog_tray is not None:
+                self.prog_tray.hide()
+        except Exception:  # noqa: BLE001
+            pass
         event.accept()
 
 
