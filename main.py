@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.4"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Ana sayfaya \"Bugünün programı\" kartı eklendi."
+UPDATE_NOTES = "Ana sayfa: Bugünün programı ve Paylaşım takibi yan yana, daha kompakt."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -5861,11 +5861,13 @@ class MainWindow(QMainWindow):
         layout.addLayout(mid)
 
         prog_card, p_layout = self._card(spacing=8)
+        prog_card.setMinimumWidth(250)
+        prog_card.setMaximumWidth(300)
         p_head = QHBoxLayout()
         self.today_prog_label = self._section_label("Bugünün programı")
         p_head.addWidget(self.today_prog_label)
         p_head.addStretch(1)
-        prog_all = QPushButton("Haftalık program ›")
+        prog_all = QPushButton("Hafta ›")
         prog_all.setObjectName("linkBtn")
         prog_all.setCursor(Qt.CursorShape.PointingHandCursor)
         prog_all.clicked.connect(lambda: self._go_to(PAGE_PROGRAM))
@@ -5874,14 +5876,13 @@ class MainWindow(QMainWindow):
         self.today_prog_rows = QVBoxLayout()
         self.today_prog_rows.setSpacing(6)
         p_layout.addLayout(self.today_prog_rows)
-        layout.addWidget(prog_card)
 
         track, t_layout = self._card(spacing=10, clickable=True)
         track.clicked.connect(self._share_history)
         t_head = QHBoxLayout()
         t_head.addWidget(self._section_label("Paylaşım takibi"))
         t_head.addStretch(1)
-        hist_btn = QPushButton("Geçmiş ve istatistik ›")
+        hist_btn = QPushButton("Geçmiş ›")
         hist_btn.setObjectName("linkBtn")
         hist_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         hist_btn.clicked.connect(self._share_history)
@@ -5891,22 +5892,26 @@ class MainWindow(QMainWindow):
         undo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         undo_btn.clicked.connect(self._share_undo)
         t_head.addWidget(undo_btn)
-        add_btn = QPushButton("+ Paylaşım kaydet")
+        add_btn = QPushButton("+ Kaydet")
         add_btn.setObjectName("linkBtn")
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_btn.clicked.connect(self._share_add)
         t_head.addWidget(add_btn)
         t_layout.addLayout(t_head)
-        self.track_body = QHBoxLayout()
-        self.track_body.setSpacing(22)
+        self.track_body = QVBoxLayout()
+        self.track_body.setSpacing(14)
         self.track_faces = QVBoxLayout()
         self.track_faces.setSpacing(8)
-        self.track_body.addLayout(self.track_faces, 1)
+        self.track_body.addLayout(self.track_faces)
         self.track_side = QVBoxLayout()
         self.track_side.setSpacing(0)
-        self.track_body.addLayout(self.track_side, 1)
+        self.track_body.addLayout(self.track_side)
         t_layout.addLayout(self.track_body)
-        layout.addWidget(track)
+        row2 = QHBoxLayout()
+        row2.setSpacing(14)
+        row2.addWidget(prog_card, 0, Qt.AlignmentFlag.AlignTop)
+        row2.addWidget(track, 1, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(row2)
 
         fixture_card, f_layout = self._card(spacing=8)
         f_head = QHBoxLayout()
@@ -6848,12 +6853,13 @@ class MainWindow(QMainWindow):
             row.setObjectName("progRow")
             row.setStyleSheet(f"QFrame#progRow {{ background: {bg}; border: 1px solid {bd}; border-radius: 10px; }}")
             rl = QHBoxLayout(row)
-            rl.setContentsMargins(12, 7, 12, 7)
-            rl.setSpacing(14)
+            rl.setContentsMargins(10, 6, 10, 6)
+            rl.setSpacing(10)
             t = QLabel(it.get("time") or "Gün boyu")
-            t.setFixedWidth(64)
+            t.setFixedWidth(46)
             t.setStyleSheet(f"color: {fg}; font-weight: 700; background: transparent; border: none;")
             n = QLabel(it.get("title", ""))
+            n.setWordWrap(True)
             n.setStyleSheet(f"color: {K_TEXT}; background: transparent; border: none;")
             rl.addWidget(t)
             rl.addWidget(n, 1)
