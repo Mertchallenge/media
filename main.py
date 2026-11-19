@@ -99,6 +99,7 @@ from datetime import datetime, date, timedelta
 #   ~/MediaStaffKS_son_foto.txt     -> işlenmeye BAŞLANAN son fotoğraf (çökerse suçlu budur)
 import faulthandler
 import gc
+import math
 CRASH_LOG_PATH = os.path.join(os.path.expanduser("~"), "MediaStaffKS_crash.log")
 LAST_PHOTO_PATH = os.path.join(os.path.expanduser("~"), "MediaStaffKS_son_foto.txt")
 try:
@@ -124,14 +125,14 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QPalette, QColor, QDesktopServices, QPainter, QPen, QPainterPath, QPolygonF,
-    QPixmap, QIcon, QFontDatabase, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
+    QPixmap, QIcon, QFontDatabase, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut, QImageReader
 )
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QTextEdit, QFileDialog, QFrame, QMessageBox, QDialog,
     QSlider, QScrollArea, QAbstractButton, QSizePolicy, QToolButton, QButtonGroup,
     QStackedWidget, QLineEdit, QComboBox, QDateEdit, QTimeEdit, QSpinBox,
-    QDoubleSpinBox, QCheckBox, QPlainTextEdit
+    QDoubleSpinBox, QCheckBox, QPlainTextEdit, QProgressBar
 )
 
 
@@ -374,6 +375,21 @@ def face_focus_metrics(face, img):
     return sharp, min_side, float(np.hypot(dx, dy))
 
 
+def face_quality_score(face, img, match_score: float = 0.0) -> float:
+    """0–100 arası 'paylaşmaya değer mi' puanı: netlik, yüz boyutu, kadraj merkezi, tespit güveni, eşleşme skoru.
+    'En iyi fotoğraflar' seçimi bu puanı kullanır (ör. oyuncu başına ilk 5)."""
+    try:
+        sharp, side, dist = face_focus_metrics(face, img)
+        s = min(1.0, math.log1p(max(sharp, 0.0)) / math.log1p(600.0))
+        z = min(1.0, side / 260.0)
+        c = max(0.0, 1.0 - min(dist, 1.0) * 0.5)
+        d = float(getattr(face, "det_score", 0.8) or 0.8)
+        m = min(1.0, max(0.0, (float(match_score) - 0.3) / 0.4))
+        return round(100.0 * (0.35 * s + 0.30 * z + 0.10 * c + 0.10 * min(1.0, d) + 0.15 * m), 1)
+    except Exception:
+        return 0.0
+
+
 def find_background_faces(faces, img) -> set:
     """
     ODAK DIŞI / ARKA PLAN YÜZLERİ: Karede birden fazla yüz varken, fotoğrafın asıl öznesi olmayan
@@ -399,7 +415,8 @@ def find_background_faces(faces, img) -> set:
     return skipped
 
 
-def identify_all_faces(faces, img, ref_db: dict, threshold: float, margin: float, quality_filter: bool):
+def identify_all_faces(faces, img, ref_db: dict, threshold: float, margin: float, quality_filter: bool,
+                       info: dict | None = None):
     """
     ÇOKLU YÜZ ALGORİTMASI: Karedeki fotoğrafın ASIL öznesi olan her yüz ayrı ayrı kalite süzgecinden
     ve eşleştirmeden geçer; tanınan her oyuncu fotoğrafı kendi klasörüne alır (gol sevinci, ikili
@@ -413,7 +430,8 @@ def identify_all_faces(faces, img, ref_db: dict, threshold: float, margin: float
     faces = list(faces or [])
     skipped = find_background_faces(faces, img) if quality_filter else set()
     matches = {}
-    rejected = []  # (yüz_alanı, skor, sebep)
+    rejected = []  # (yüz_alanı, skor, sebep, adaylar)
+    quality = {}
     for i, face in enumerate(faces):
         if i in skipped:
             continue
@@ -422,19 +440,28 @@ def identify_all_faces(faces, img, ref_db: dict, threshold: float, margin: float
         if quality_filter:
             ok, q_reason = face_quality_check(face, img)
             if not ok:
-                rejected.append((area, 0.0, q_reason))
+                rejected.append((area, 0.0, q_reason, []))
                 continue
-        name, score, reason = match_embedding_with_margin(face.normed_embedding, ref_db, threshold, margin)
+        detail = {}
+        name, score, reason = match_embedding_with_margin(face.normed_embedding, ref_db, threshold, margin, detail)
         if name is None:
-            rejected.append((area, score, reason))
+            rejected.append((area, score, reason, detail.get("top", [])))
             continue
         if score > matches.get(name, -1.0):  # aynı oyuncu iki yüzle eşleşirse en iyi skor kalır
             matches[name] = score
+        if info is not None:
+            q = face_quality_score(face, img, score)
+            if q > quality.get(name, -1.0):
+                quality[name] = q
+    if info is not None:
+        info["quality"] = quality
     if matches:
         return matches, None, 0.0, len(skipped)
     if not rejected:
         return {}, "yüz bulunamadı", 0.0, len(skipped)
-    _, score, reason = max(rejected, key=lambda r: r[0])
+    _, score, reason, cands = max(rejected, key=lambda r: r[0])
+    if info is not None:
+        info["candidates"] = cands
     return {}, reason, score, len(skipped)
 
 
@@ -492,7 +519,7 @@ def enhance_image_for_detection(img):
 
 
 def match_embedding_with_margin(embedding: np.ndarray, ref_db: dict,
-                                 threshold: float, margin: float):
+                                 threshold: float, margin: float, detail: dict | None = None):
     """
     Yüz embedding'ini referans veritabanıyla kıyaslar. İki katmanlı karar verir:
       1) En yüksek skor eşik değerinin altındaysa -> eşleşme yok.
@@ -517,6 +544,8 @@ def match_embedding_with_margin(embedding: np.ndarray, ref_db: dict,
     ranked = sorted(per_name_best.items(), key=lambda kv: kv[1], reverse=True)
     best_name, best_score = ranked[0]
     second_score = ranked[1][1] if len(ranked) > 1 else -1.0
+    if detail is not None:
+        detail["top"] = [(n, float(sc)) for n, sc in ranked[:3]]  # inceleme ekranı için ilk 3 aday
 
     if best_score < threshold:
         return None, best_score, "eşik altı"
@@ -857,7 +886,7 @@ class ExtractionWorker(QThread):
             "toplam": 0, "islenen": 0, "basarili": 0, "basarisiz": 0,
             "kaleci": 0, "karisik": 0, "output_folder": "", "per_player": {}, "csv_path": "",
         }
-        csv_rows = []  # (dosya, sonuc, oyuncu, skor, neden)
+        csv_rows = []  # REPORT_HEADER sırasıyla: dosya, sonuç, oyuncu, skor, not, kalite, adaylar, konum
         try:
             self.log_signal.emit("Yüz tanıma motoru başlatılıyor (antelopev2 → buffalo_l otomatik düşüş)...", "info")
             face_app, (det_providers, rec_providers), model_pack = build_face_analyzer(
@@ -907,17 +936,20 @@ class ExtractionWorker(QThread):
                         raise ValueError("Görüntü okunamadı / bozuk dosya")
 
                     faces, proc_img = detect_faces_adaptive(face_app, img)
+                    finfo = {}
                     matches, reject_reason, reject_score, bg_skipped = identify_all_faces(
-                        faces, proc_img, ref_db, self.threshold, self.margin, self.quality_filter)
+                        faces, proc_img, ref_db, self.threshold, self.margin, self.quality_filter, finfo)
                     bg_note = f"arka plan/odak dışı {bg_skipped} yüz atlandı" if bg_skipped else "-"
 
                     if not matches:
-                        self._copy_to(path, mixed_dir, filename)
+                        dest = self._copy_to(path, mixed_dir, filename)
                         stats["karisik"] += 1
                         stats["basarisiz"] += 1
                         stats["per_player"][MIXED_FOLDER_NAME] = stats["per_player"].get(MIXED_FOLDER_NAME, 0) + 1
+                        cand_text = "|".join(f"{n}:{sc:.3f}" for n, sc in finfo.get("candidates", []))
                         csv_rows.append((filename, "Karışık", "-", f"{reject_score:.3f}",
-                                         reject_reason if not bg_skipped else f"{reject_reason}; {bg_note}"))
+                                         reject_reason if not bg_skipped else f"{reject_reason}; {bg_note}",
+                                         "", cand_text, os.path.relpath(dest, output_root)))
                         self.log_signal.emit(f"[KARIŞIK] {reject_reason}: {filename}", "warn")
                         self.thumbnail_signal.emit(
                             make_thumbnail_bytes(img), filename, f"KARIŞIK — {reject_reason}")
@@ -928,21 +960,25 @@ class ExtractionWorker(QThread):
                         for matched_name, score in sorted(matches.items(), key=lambda kv: kv[1], reverse=True):
                             if strip_accents_upper(matched_name) in goalkeeper_pool_clean:
                                 if not keeper_copied:  # iki kaleci aynı karedeyse KALECILER'e tek kopya
-                                    self._copy_to(path, goalkeeper_dir, filename)
+                                    keeper_dest = self._copy_to(path, goalkeeper_dir, filename)
                                     keeper_copied = True
                                     stats["kaleci"] += 1
                                     stats["per_player"][GOALKEEPER_FOLDER_NAME] = \
                                         stats["per_player"].get(GOALKEEPER_FOLDER_NAME, 0) + 1
-                                csv_rows.append((filename, "Kaleci Havuzu", matched_name, f"{score:.3f}", bg_note))
+                                csv_rows.append((filename, "Kaleci Havuzu", matched_name, f"{score:.3f}", bg_note,
+                                                 f"{finfo.get('quality', {}).get(matched_name, 0):.1f}", "",
+                                                 os.path.relpath(keeper_dest, output_root)))
                                 self.log_signal.emit(
                                     f"[KALECİLER] {matched_name} (skor={score:.2f}): {filename}", "success")
                                 labels.append(f"KALECİLER — {matched_name} ({score:.2f})")
                             else:
                                 player_dir = os.path.join(output_root, matched_name)
                                 os.makedirs(player_dir, exist_ok=True)
-                                self._copy_to(path, player_dir, filename)
+                                dest = self._copy_to(path, player_dir, filename)
                                 stats["per_player"][matched_name] = stats["per_player"].get(matched_name, 0) + 1
-                                csv_rows.append((filename, "Eşleşti", matched_name, f"{score:.3f}", bg_note))
+                                csv_rows.append((filename, "Eşleşti", matched_name, f"{score:.3f}", bg_note,
+                                                 f"{finfo.get('quality', {}).get(matched_name, 0):.1f}", "",
+                                                 os.path.relpath(dest, output_root)))
                                 self.log_signal.emit(
                                     f"[{matched_name}] eşleşti (skor={score:.2f}): {filename}", "success")
                                 labels.append(f"{matched_name} ({score:.2f})")
@@ -957,7 +993,7 @@ class ExtractionWorker(QThread):
                     stats["karisik"] += 1
                     stats["basarisiz"] += 1
                     stats["per_player"][MIXED_FOLDER_NAME] = stats["per_player"].get(MIXED_FOLDER_NAME, 0) + 1
-                    csv_rows.append((filename, "Karışık", "-", "0.000", f"hata: {e}"))
+                    csv_rows.append((filename, "Karışık", "-", "0.000", f"hata: {e}", "", "", ""))
                     self.log_signal.emit(f"[HATA→KARIŞIK] {filename}: {e}", "error")
 
                 stats["islenen"] = i
@@ -970,12 +1006,24 @@ class ExtractionWorker(QThread):
                     csv_path = os.path.join(output_root, "Rapor.csv")
                     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
                         writer = csv.writer(f, delimiter=";")
-                        writer.writerow(["Dosya", "Sonuç", "Oyuncu", "Skor", "Not"])
+                        writer.writerow(REPORT_HEADER)
                         writer.writerows(csv_rows)
                     stats["csv_path"] = csv_path
                     self.log_signal.emit(f"Denetim raporu kaydedildi: {csv_path}", "info")
                 except Exception as e:
                     self.log_signal.emit(f"CSV raporu kaydedilemedi: {e}", "warn")
+
+                # Oyuncu başına en iyi fotoğraflar (SECILENLER klasörü)
+                try:
+                    n_best = int(load_medya_extra().get("best_count", DEFAULT_BEST_COUNT))
+                    made = build_selections(output_root, n_best)
+                    stats["secilen"] = made
+                    if made:
+                        self.log_signal.emit(
+                            f"En iyi fotoğraflar hazır: {made} kare → {SELECTION_FOLDER_NAME} klasörü "
+                            f"(oyuncu başına en fazla {n_best}).", "success")
+                except Exception as e:
+                    self.log_signal.emit(f"En iyi fotoğraf seçimi yapılamadı: {e}", "warn")
 
         except Exception as e:
             tb = traceback.format_exc()
@@ -984,9 +1032,10 @@ class ExtractionWorker(QThread):
         self.finished_signal.emit(stats)
 
     @staticmethod
-    def _copy_to(src_path: str, dest_dir: str, filename: str):
+    def _copy_to(src_path: str, dest_dir: str, filename: str) -> str:
         dest_path = unique_destination_path(dest_dir, filename)
         shutil.copy2(src_path, dest_path)  # metadata korunarak kopyalama
+        return dest_path
 
 
 
@@ -2086,6 +2135,34 @@ QScrollBar::handle:vertical {{ background: #22362C; border-radius: 4px; min-heig
 QScrollBar::handle:vertical:hover {{ background: {K_GREEN}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+QComboBox, QSpinBox {{
+    background-color: {K_BG};
+    color: {K_TEXT};
+    border: 1px solid {K_LINE2};
+    border-radius: 10px;
+    padding: 6px 12px;
+    font-size: 13px;
+    min-height: 20px;
+}}
+QComboBox:focus, QSpinBox:focus {{ border: 1px solid {K_GREEN}; }}
+QComboBox QAbstractItemView {{
+    background-color: {K_CARD};
+    color: {K_TEXT};
+    border: 1px solid {K_LINE2};
+    selection-background-color: {K_GREEN};
+    selection-color: #04140D;
+    outline: 0px;
+}}
+QPlainTextEdit {{
+    background-color: {K_BG};
+    color: {K_TEXT};
+    border: 1px solid {K_LINE2};
+    border-radius: 10px;
+    padding: 10px;
+    font-size: 13px;
+}}
+QPlainTextEdit:focus {{ border: 1px solid {K_GREEN}; }}
+QCheckBox {{ color: {K_SOFT}; spacing: 8px; }}
 
 QTextEdit {{
     background-color: {K_CARD};
@@ -2430,13 +2507,1840 @@ def classify_log(message: str, level: str):
 PAGE_META = [
     ("MediaStaffKS", "Kocaelispor Medya Departmanı · Genel Bakış"),
     ("Yüz Ayıklama", "Referans ve medya klasörlerinden otomatik oyuncu ayıklama"),
+    ("İnceleme", "Emin olunmayan eşleşmeleri onayla ya da düzelt"),
+    ("Paylaşım", "Oyunculara Drive linki ve mesaj · içerik dengesi · sosyal medya boyutları"),
     ("Maçlar", "Fikstür, maç detayı ve yapay zekâ yorumu"),
     ("Doğum Günleri", "Kadronun yaklaşan doğum günleri"),
     ("Basın Günleri", "Hangi oyuncunun hangi hafta röportaj aldığının takvimi"),
     ("Raporlar", "Geçmiş ayıklama işlemleri"),
     ("Ayarlar", "Yapay zekâ ve uygulama ayarları"),
 ]
-PAGE_HOME, PAGE_EXTRACT, PAGE_MATCHES, PAGE_BIRTHDAYS, PAGE_PRESS, PAGE_REPORTS, PAGE_SETTINGS = range(7)
+(PAGE_HOME, PAGE_EXTRACT, PAGE_REVIEW, PAGE_SHARE, PAGE_MATCHES, PAGE_BIRTHDAYS, PAGE_PRESS,
+ PAGE_REPORTS, PAGE_SETTINGS) = range(9)
+
+
+# ==========================================================================================
+# MEDYA ARAÇLARI — Rapor okuma/yazma, en iyi fotoğraflar, paylaşım, sosyal medya boyutları
+# (Arayüzden bağımsız mantık burada; sayfalar aşağıdaki ReviewPage / SharePage sınıflarında.)
+# ==========================================================================================
+
+REPORT_HEADER = ["Dosya", "Sonuç", "Oyuncu", "Skor", "Not", "Kalite", "Adaylar", "Konum"]
+SELECTION_FOLDER_NAME = "SECILENLER"
+SOCIAL_FOLDER_NAME = "SOSYAL"
+SPECIAL_FOLDERS = {MIXED_FOLDER_NAME, SELECTION_FOLDER_NAME, SOCIAL_FOLDER_NAME}
+DEFAULT_BEST_COUNT = 5
+REVIEW_LOW_SCORE = 0.45   # bu skorun altındaki eşleşmeler "düşük güvenli" sayılıp incelemeye düşer
+DEFAULT_SHARE_MESSAGE = ("Merhaba {ad}, {etkinlik} fotoğrafların hazır ({adet} kare). "
+                         "Buradan indirebilirsin: {link}")
+MEDYA_EXTRA_PATH = os.path.join(APP_DIR, "medya_ayarlar.json")
+SOCIAL_FORMATS = [
+    ("Story", "Story 1080×1920", 1080, 1920),
+    ("Gonderi", "Gönderi 1080×1350", 1080, 1350),
+    ("Kare", "Kare 1080×1080", 1080, 1080),
+]
+LOGO_POSITIONS = ["Sağ alt", "Sol alt", "Sağ üst", "Sol üst"]
+
+MATCHDAY_PHASES = [
+    ("Maç öncesi", [
+        ("m_afis", "Maç günü afişi paylaşıldı", ""),
+        ("m_kadro", "Kadro / ilk 11 görseli hazır", ""),
+        ("m_rakip", "Rakip tanıtım paylaşımı", ""),
+        ("m_foto", "Fotoğrafçı, ekipman ve kart/pil kontrolü", ""),
+        ("m_story", "Stadyum varış hikâyesi (story)", ""),
+    ]),
+    ("Maç sırasında", [
+        ("s_canli", "Canlı skor / dakika paylaşımları", ""),
+        ("s_gol", "Gol görselleri", ""),
+        ("s_devre", "Devre arası paylaşımı", ""),
+    ]),
+    ("Maç sonrası", [
+        ("a_skor", "Skor görseli", ""),
+        ("a_ayikla", "Fotoğraflar yüz ayıklamadan geçti", "extract"),
+        ("a_incele", "Karışık fotoğraflar incelendi", "review"),
+        ("a_paylas", "Oyunculara Drive linkleri gönderildi", "share"),
+        ("a_mvp", "Maçın adamı paylaşımı", ""),
+        ("a_basin", "Teknik direktör / oyuncu açıklamaları", ""),
+        ("a_tesekkur", "Taraftara teşekkür paylaşımı", ""),
+    ]),
+]
+
+
+def load_medya_extra() -> dict:
+    base = {
+        "share_links": {}, "share_message": DEFAULT_SHARE_MESSAGE, "best_count": DEFAULT_BEST_COUNT,
+        "matchday": {},
+        "social": {"formats": ["Story", "Gonderi"], "mode": "Kırp", "logo": True,
+                   "logo_pos": "Sağ alt", "logo_size": 14, "source": "Seçilenler"},
+    }
+    data = read_json(MEDYA_EXTRA_PATH, {})
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if k == "social" and isinstance(v, dict):
+                base["social"].update(v)
+            elif k in base:
+                base[k] = v
+    return base
+
+
+def save_medya_extra(extra: dict):
+    write_json(MEDYA_EXTRA_PATH, extra)
+
+
+def count_images(folder: str) -> int:
+    try:
+        return sum(1 for f in os.listdir(folder) if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS)
+    except OSError:
+        return 0
+
+
+def read_report(csv_path: str) -> list:
+    """Rapor.csv → satır sözlükleri. Eski sürümlerin (5 sütunlu) raporlarını da okur."""
+    rows = []
+    try:
+        with open(csv_path, newline="", encoding="utf-8-sig") as f:
+            for r in csv.DictReader(f, delimiter=";"):
+                rows.append({k: (r.get(k) or "") for k in REPORT_HEADER})
+    except Exception:
+        return []
+    return rows
+
+
+def write_report(csv_path: str, rows: list):
+    tmp = csv_path + ".tmp"
+    with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f, delimiter=";")
+        writer.writerow(REPORT_HEADER)
+        for r in rows:
+            writer.writerow([r.get(k, "") for k in REPORT_HEADER])
+    os.replace(tmp, csv_path)
+
+
+def report_row_path(root: str, row: dict) -> str:
+    """Bir rapor satırının fotoğrafının diskteki yolu (bulunamazsa boş metin)."""
+    rel = row.get("Konum", "")
+    if rel:
+        p = os.path.join(root, rel)
+        if os.path.isfile(p):
+            return p
+    name = row.get("Dosya", "")
+    res = row.get("Sonuç", "")
+    if res.startswith("Karışık"):
+        cands = [os.path.join(root, MIXED_FOLDER_NAME, name)]
+    elif res.startswith("Kaleci"):
+        cands = [os.path.join(root, GOALKEEPER_FOLDER_NAME, name)]
+    else:
+        cands = [os.path.join(root, row.get("Oyuncu", ""), name)]
+    for c in cands:
+        if os.path.isfile(c):
+            return c
+    return ""
+
+
+def parse_candidates(text: str) -> list:
+    out = []
+    for part in (text or "").split("|"):
+        if ":" in part:
+            n, _, sc = part.rpartition(":")
+            try:
+                out.append((n.strip(), float(sc)))
+            except ValueError:
+                pass
+    return out
+
+
+def photo_quality_fallback(path: str) -> float:
+    """Yüz bilgisi olmayan (eski rapor) fotoğraflar için yedek kalite puanı: netlik + çözünürlük."""
+    img = imread_unicode(path)
+    if img is None:
+        return 0.0
+    h, w = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    if max(h, w) > 800:
+        k = 800.0 / max(h, w)
+        gray = cv2.resize(gray, (max(1, int(w * k)), max(1, int(h * k))), interpolation=cv2.INTER_AREA)
+    sharp = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    s = min(1.0, math.log1p(sharp) / math.log1p(400.0))
+    r = min(1.0, (h * w) / 12e6)
+    return round(100.0 * (0.7 * s + 0.3 * r) * 0.8, 1)
+
+
+def pick_best(cands: list, n: int, burst_seconds: float = 3.0) -> list:
+    """(kalite, yol) listesinden en iyi n kare. Aynı saniyelerde çekilmiş seri çekimlerden
+    önce birer tane seçilir (5 neredeyse aynı kare yerine farklı anlar); yetmezse kalite sırasıyla doldurulur."""
+    ordered = sorted(cands, key=lambda c: c[0], reverse=True)
+    chosen, rest = [], []
+    for q, path in ordered:
+        try:
+            t = os.path.getmtime(path)
+        except OSError:
+            t = 0.0
+        if t > 0 and any(abs(t - ct) <= burst_seconds for _, _, ct in chosen):
+            rest.append((q, path))
+            continue
+        chosen.append((q, path, t))
+        if len(chosen) >= n:
+            break
+    out = [(q, p) for q, p, _ in chosen]
+    if len(out) < n:
+        out += rest[:n - len(out)]
+    return out
+
+
+def build_selections(output_root: str, n: int, replace: bool = True) -> int:
+    """Rapor.csv'ye bakarak her oyuncunun en iyi n fotoğrafını SECILENLER/<Oyuncu>/ altına kopyalar.
+    Döner: kopyalanan toplam fotoğraf sayısı."""
+    rows = read_report(os.path.join(output_root, "Rapor.csv"))
+    if not rows:
+        return 0
+    groups: dict = {}
+    for r in rows:
+        if not (r["Sonuç"].startswith("Eşleşti") or r["Sonuç"].startswith("Kaleci")):
+            continue
+        player = r["Oyuncu"].strip()
+        if not player or player == "-":
+            continue
+        path = report_row_path(output_root, r)
+        if not path:
+            continue
+        try:
+            q = float(r["Kalite"]) if r["Kalite"] else None
+        except ValueError:
+            q = None
+        groups.setdefault(player, []).append([q, path])
+    sel_root = os.path.join(output_root, SELECTION_FOLDER_NAME)
+    if replace and os.path.isdir(sel_root):
+        shutil.rmtree(sel_root, ignore_errors=True)
+    total = 0
+    for player, items in groups.items():
+        for it in items:
+            if it[0] is None:
+                it[0] = photo_quality_fallback(it[1])
+        best = pick_best([(q, p) for q, p in items], n)
+        if not best:
+            continue
+        dest = os.path.join(sel_root, player)
+        os.makedirs(dest, exist_ok=True)
+        for rank, (q, p) in enumerate(best, 1):
+            shutil.copy2(p, unique_destination_path(dest, f"{rank:02d}_{os.path.basename(p)}"))
+            total += 1
+    return total
+
+
+def load_reference_counts(ref_folder: str) -> dict:
+    """ref_memory.pkl'den {oyuncu: referans sayısı} (klasör seçili değilse / önbellek yoksa boş)."""
+    if not ref_folder:
+        return {}
+    try:
+        with open(os.path.join(ref_folder, REF_CACHE_FILENAME), "rb") as f:
+            data = pickle.load(f)
+        return {n: len(v) for n, v in (data.get("ref_db") or {}).items()}
+    except Exception:
+        return {}
+
+
+def build_share_entries(root: str) -> list:
+    """Paylaşılacak klasörler: [{name, path, count, best, best_path, keeper}] — oyuncu adına göre sıralı."""
+    entries = []
+    if not root or not os.path.isdir(root):
+        return entries
+    rows = read_report(os.path.join(root, "Rapor.csv"))
+    keeper_names: dict = {}
+    for r in rows:
+        if r["Sonuç"].startswith("Kaleci") and r["Oyuncu"].strip() not in ("", "-"):
+            keeper_names[r["Oyuncu"].strip()] = keeper_names.get(r["Oyuncu"].strip(), 0) + 1
+    has_keeper_rows = bool(keeper_names)
+    for name in os.listdir(root):
+        p = os.path.join(root, name)
+        if not os.path.isdir(p) or name in SPECIAL_FOLDERS:
+            continue
+        if name == GOALKEEPER_FOLDER_NAME and has_keeper_rows:
+            continue  # kaleciler aşağıda tek tek eklenir
+        best_path = os.path.join(root, SELECTION_FOLDER_NAME, name)
+        entries.append({"name": name, "path": p, "count": count_images(p),
+                        "best": count_images(best_path), "best_path": best_path, "keeper": False})
+    for name, cnt in keeper_names.items():
+        best_path = os.path.join(root, SELECTION_FOLDER_NAME, name)
+        entries.append({"name": name, "path": best_path if os.path.isdir(best_path)
+                        else os.path.join(root, GOALKEEPER_FOLDER_NAME),
+                        "count": cnt, "best": count_images(best_path), "best_path": best_path, "keeper": True})
+    entries.sort(key=lambda e: turkish_lower(e["name"]))
+    return entries
+
+
+# --- Sosyal medya boyutları ---------------------------------------------------------------
+_logo_cache: dict = {}
+_haar_cache: dict = {}
+
+
+def load_logo_bgra():
+    if "logo" in _logo_cache:
+        return _logo_cache["logo"]
+    img = None
+    try:
+        path = club_logo_source_path()
+        if path:
+            data = np.fromfile(str(path), dtype=np.uint8)
+        else:
+            data = np.frombuffer(base64.b64decode(CLUB_LOGO_BASE64), dtype=np.uint8)
+        img = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+        if img is not None and img.ndim == 3 and img.shape[2] == 3:
+            alpha = np.full(img.shape[:2] + (1,), 255, dtype=np.uint8)
+            img = np.concatenate([img, alpha], axis=2)
+        if img is not None and img.ndim == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA)
+    except Exception:
+        img = None
+    _logo_cache["logo"] = img
+    return img
+
+
+def find_focus_point(img) -> tuple:
+    """Kırpmada korunacak nokta (0-1 normalize x, y): en büyük yüz; bulunamazsa kadrajın üst-orta bölgesi."""
+    if "haar" not in _haar_cache:
+        try:
+            xml = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+            det = cv2.CascadeClassifier(xml) if os.path.isfile(xml) else None
+            _haar_cache["haar"] = None if (det is None or det.empty()) else det
+        except Exception:
+            _haar_cache["haar"] = None
+    det = _haar_cache["haar"]
+    if det is not None:
+        try:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            h, w = gray.shape[:2]
+            if max(h, w) > 640:
+                k = 640.0 / max(h, w)
+                gray = cv2.resize(gray, (max(1, int(w * k)), max(1, int(h * k))), interpolation=cv2.INTER_AREA)
+            gh, gw = gray.shape[:2]
+            faces = det.detectMultiScale(gray, 1.1, 5, minSize=(24, 24))
+            if len(faces):
+                x, y, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+                return ((x + fw / 2.0) / gw, (y + fh / 2.0) / gh)
+        except Exception:
+            pass
+    return (0.5, 0.38)
+
+
+def crop_to_aspect(img, tw: int, th: int, focus: tuple):
+    h, w = img.shape[:2]
+    target = tw / float(th)
+    if w / float(h) > target:
+        nw, nh = int(round(h * target)), h
+    else:
+        nw, nh = w, int(round(w / target))
+    nw, nh = max(1, min(nw, w)), max(1, min(nh, h))
+    x0 = int(min(max(focus[0] * w - nw / 2.0, 0), w - nw))
+    y0 = int(min(max(focus[1] * h - nh / 2.0, 0), h - nh))
+    return img[y0:y0 + nh, x0:x0 + nw]
+
+
+def overlay_logo(canvas, logo, pos: str, pct: float, story_safe: bool):
+    ch, cw = canvas.shape[:2]
+    lw = max(24, int(cw * pct / 100.0))
+    lh = max(1, int(logo.shape[0] * lw / float(logo.shape[1])))
+    small = cv2.resize(logo, (lw, lh), interpolation=cv2.INTER_AREA)
+    m = int(cw * 0.04)
+    top_m, bot_m = m, m
+    if story_safe:  # story arayüzü üst/alt şeridi logoyu kapatmasın
+        top_m, bot_m = max(m, int(ch * 0.13)), max(m, int(ch * 0.18))
+    x = cw - lw - m if "Sağ" in pos else m
+    y = ch - lh - bot_m if "alt" in pos else top_m
+    if x < 0 or y < 0 or x + lw > cw or y + lh > ch:
+        return canvas
+    alpha = small[:, :, 3:4].astype(np.float32) / 255.0
+    roi = canvas[y:y + lh, x:x + lw].astype(np.float32)
+    canvas[y:y + lh, x:x + lw] = (roi * (1.0 - alpha) + small[:, :, :3].astype(np.float32) * alpha).astype(np.uint8)
+    return canvas
+
+
+def render_social(img, tw: int, th: int, mode: str, focus: tuple, logo, logo_pos: str, logo_pct: float):
+    if mode == "Sığdır":
+        bg = crop_to_aspect(img, tw, th, (0.5, 0.5))
+        bg = cv2.resize(bg, (max(2, tw // 6), max(2, th // 6)), interpolation=cv2.INTER_AREA)
+        bg = cv2.GaussianBlur(bg, (0, 0), 6)
+        bg = cv2.resize(bg, (tw, th), interpolation=cv2.INTER_CUBIC)
+        canvas = (bg.astype(np.float32) * 0.55).astype(np.uint8)
+        h, w = img.shape[:2]
+        k = min(tw / float(w), th / float(h))
+        nw, nh = max(1, int(round(w * k))), max(1, int(round(h * k)))
+        fg = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_CUBIC)
+        x, y = (tw - nw) // 2, (th - nh) // 2
+        canvas[y:y + nh, x:x + nw] = fg
+    else:
+        crop = crop_to_aspect(img, tw, th, focus)
+        interp = cv2.INTER_AREA if crop.shape[1] > tw else cv2.INTER_CUBIC
+        canvas = cv2.resize(crop, (tw, th), interpolation=interp)
+    if logo is not None:
+        canvas = overlay_logo(canvas, logo, logo_pos, logo_pct, story_safe=(th >= tw * 1.7))
+    return canvas
+
+
+def list_social_jobs(root: str, source: str, extra_folder: str = "") -> list:
+    """[(oyuncu, dosya_yolu)] — kaynak: 'Seçilenler' | 'Tüm oyuncu klasörleri' | 'Başka klasör'."""
+    jobs = []
+    if source == "Başka klasör":
+        for p in sorted(list_image_files(extra_folder)) if extra_folder else []:
+            jobs.append(("Genel", p))
+        return jobs
+    if source == "Seçilenler":
+        base = os.path.join(root, SELECTION_FOLDER_NAME)
+        if os.path.isdir(base):
+            for player in sorted(os.listdir(base)):
+                pdir = os.path.join(base, player)
+                if os.path.isdir(pdir):
+                    for fn in sorted(os.listdir(pdir)):
+                        if os.path.splitext(fn)[1].lower() in IMAGE_EXTENSIONS:
+                            jobs.append((player, os.path.join(pdir, fn)))
+        return jobs
+    for e in build_share_entries(root):
+        if e["keeper"]:
+            continue
+        try:
+            for fn in sorted(os.listdir(e["path"])):
+                if os.path.splitext(fn)[1].lower() in IMAGE_EXTENSIONS:
+                    jobs.append((e["name"], os.path.join(e["path"], fn)))
+        except OSError:
+            pass
+    return jobs
+
+
+class SocialWorker(QThread):
+    progress_signal = pyqtSignal(int, int)
+    log_signal = pyqtSignal(str, str)
+    done_signal = pyqtSignal(int, str)
+
+    def __init__(self, jobs, out_root, formats, mode, logo_on, logo_pos, logo_pct, parent=None):
+        super().__init__(parent)
+        self.jobs, self.out_root, self.formats = jobs, out_root, formats
+        self.mode, self.logo_on, self.logo_pos, self.logo_pct = mode, logo_on, logo_pos, logo_pct
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        total = len(self.jobs) * len(self.formats)
+        done = written = 0
+        logo = load_logo_bgra() if self.logo_on else None
+        if self.logo_on and logo is None:
+            self.log_signal.emit("Logo dosyası okunamadı, logo eklenmeden devam ediliyor.", "warn")
+        for i, (player, path) in enumerate(self.jobs, 1):
+            if self._cancel:
+                break
+            try:
+                img = imread_unicode(path)
+                if img is None:
+                    raise ValueError("okunamadı")
+                h, w = img.shape[:2]
+                if max(h, w) > 5000:
+                    k = 4000.0 / max(h, w)
+                    img = cv2.resize(img, (int(w * k), int(h * k)), interpolation=cv2.INTER_AREA)
+                focus = find_focus_point(img) if self.mode == "Kırp" else (0.5, 0.5)
+                for key, label, tw, th in self.formats:
+                    out = render_social(img, tw, th, self.mode, focus, logo, self.logo_pos, self.logo_pct)
+                    folder = os.path.join(self.out_root, key, player)
+                    os.makedirs(folder, exist_ok=True)
+                    stem = os.path.splitext(os.path.basename(path))[0]
+                    dest = unique_destination_path(folder, stem + ".jpg")
+                    ok, buf = cv2.imencode(".jpg", out, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+                    if ok:
+                        with open(dest, "wb") as f:
+                            f.write(buf.tobytes())
+                        written += 1
+                    done += 1
+                    self.progress_signal.emit(done, total)
+            except Exception as e:
+                self.log_signal.emit(f"{os.path.basename(path)}: {e}", "warn")
+                done += len(self.formats)
+                self.progress_signal.emit(done, total)
+            if i % 25 == 0:
+                gc.collect()
+        self.done_signal.emit(written, self.out_root)
+
+
+class RefAddWorker(QThread):
+    """İncelemede onaylanan fotoğraflardan yüzü kırpıp referans klasörüne yeni referans olarak ekler."""
+    log_signal = pyqtSignal(str, str)
+    done_signal = pyqtSignal(int, int)   # eklenen, atlanan
+
+    def __init__(self, ref_folder: str, tasks: list, parent=None):
+        super().__init__(parent)
+        self.ref_folder, self.tasks = ref_folder, tasks
+
+    def run(self):
+        added = skipped = 0
+        try:
+            face_app, _, _model = build_face_analyzer(log_callback=lambda m, lvl="info": self.log_signal.emit(m, lvl))
+            existing = {}
+            try:
+                with open(os.path.join(self.ref_folder, REF_CACHE_FILENAME), "rb") as f:
+                    existing = pickle.load(f).get("ref_db") or {}
+            except Exception:
+                existing = {}
+            for player, path in self.tasks:
+                try:
+                    img = imread_unicode(path)
+                    if img is None:
+                        skipped += 1
+                        continue
+                    faces, proc = detect_faces_adaptive(face_app, img)
+                    if not faces:
+                        skipped += 1
+                        continue
+                    refs = existing.get(player)
+                    if refs:
+                        def sim(f, refs=refs):
+                            e = f.normed_embedding
+                            return max(float(np.dot(e, r)) for r in refs) if e is not None else -1.0
+                        face = max(faces, key=sim)
+                    else:
+                        face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+                    ok, reason = face_quality_check(face, proc)
+                    if not ok:
+                        self.log_signal.emit(f"Referans atlandı ({player}): {reason}", "warn")
+                        skipped += 1
+                        continue
+                    ph, pw = proc.shape[:2]
+                    base = img if img.shape[:2] == (ph, pw) else cv2.resize(img, (pw, ph), interpolation=cv2.INTER_AREA)
+                    x1, y1, x2, y2 = [float(v) for v in face.bbox]
+                    side = max(x2 - x1, y2 - y1) * 2.0
+                    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0 - side * 0.04
+                    xa, ya = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
+                    xb, yb = int(min(pw, cx + side / 2)), int(min(ph, cy + side / 2))
+                    crop = base[ya:yb, xa:xb]
+                    if crop.size == 0:
+                        skipped += 1
+                        continue
+                    n = 2
+                    while True:
+                        dest = os.path.join(self.ref_folder, f"{player}_{n}.jpg")
+                        if not os.path.exists(dest):
+                            break
+                        n += 1
+                    okj, buf = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+                    if okj:
+                        with open(dest, "wb") as f:
+                            f.write(buf.tobytes())
+                        added += 1
+                        self.log_signal.emit(f"Yeni referans eklendi: {os.path.basename(dest)}", "success")
+                except Exception as e:
+                    self.log_signal.emit(f"Referans eklenemedi ({player}): {e}", "warn")
+                    skipped += 1
+        except Exception as e:
+            self.log_signal.emit(f"Referans güncelleme hatası: {e}", "error")
+        self.done_signal.emit(added, skipped)
+
+
+
+# ==========================================================================================
+# SAYFA: İNCELEME — emin olunmayan eşleşmeleri hızlıca onayla / düzelt (klavyeyle)
+# ==========================================================================================
+
+class HBar(QWidget):
+    """İçerik dengesi çubuğu: 0–1 arası dolum oranı, renk dışarıdan verilir."""
+
+    def __init__(self, ratio: float, color: str, parent=None):
+        super().__init__(parent)
+        self._ratio = max(0.0, min(1.0, ratio))
+        self._color = color
+        self.setFixedHeight(10)
+        self.setMinimumWidth(120)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(0, 0, self.width(), self.height())
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(K_LINE))
+        p.drawRoundedRect(r, 5, 5)
+        if self._ratio > 0:
+            p.setBrush(QColor(self._color))
+            p.drawRoundedRect(QRectF(0, 0, max(10.0, self.width() * self._ratio), self.height()), 5, 5)
+        p.end()
+
+
+def _flash(button: QPushButton, text: str = "Kopyalandı", ms: int = 1500):
+    old = button.text()
+    button.setText(text)
+    QTimer.singleShot(ms, lambda: button.setText(old))
+
+
+class ReviewPage(QWidget):
+    FILTER_MIXED = "Karışık"
+    FILTER_LOW = "Düşük güvenli"
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.root = ""
+        self.csv_path = ""
+        self.rows: list = []
+        self.queue: list = []
+        self.pos = 0
+        self.undo_stack: list = []
+        self.pending_refs: list = []
+        self.ref_worker = None
+        self.filter = self.FILTER_MIXED
+        self.names: list = []
+        self._current_path = ""
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(120)
+        self._resize_timer.timeout.connect(self._render_preview)
+        self._build()
+        self._install_shortcuts()
+        self._show()
+
+    # ---------------------------------------------------------------- arayüz
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(16)
+
+        top, t = self.win._card(margins=(18, 14, 18, 14), spacing=10)
+        bar = QHBoxLayout()
+        bar.setSpacing(10)
+        self.folder_label = ElidedLabel("Çıktı klasörü seçilmedi")
+        self.folder_label.setObjectName("pathLabel")
+        bar.addWidget(self.folder_label, 1)
+        self.filter_group = QButtonGroup(self)
+        self.filter_group.setExclusive(True)
+        for name in (self.FILTER_MIXED, self.FILTER_LOW):
+            b = QPushButton(name)
+            b.setObjectName("segBtn")
+            b.setCheckable(True)
+            b.setChecked(name == self.filter)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda checked=False, n=name: self._set_filter(n))
+            self.filter_group.addButton(b)
+            bar.addWidget(b)
+        pick = QPushButton("Klasör seç")
+        pick.setObjectName("outlineSmall")
+        pick.setCursor(Qt.CursorShape.PointingHandCursor)
+        pick.clicked.connect(self.win.choose_work_folder)
+        bar.addWidget(pick)
+        self.counter = QLabel("")
+        self.counter.setObjectName("dateSub")
+        bar.addWidget(self.counter)
+        t.addLayout(bar)
+        outer.addWidget(top)
+
+        row = QHBoxLayout()
+        row.setSpacing(16)
+
+        left, l = self.win._card(margins=(14, 14, 14, 12), spacing=8)
+        self.preview = QLabel()
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setMinimumSize(480, 320)
+        self.preview.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        l.addWidget(self.preview, 1)
+        self.file_label = ElidedLabel("")
+        self.file_label.setObjectName("dateSub")
+        l.addWidget(self.file_label)
+        row.addWidget(left, 1)
+
+        right, r = self.win._card(margins=(18, 18, 18, 16), spacing=12)
+        right.setFixedWidth(360)
+        self.status_chip_host = QHBoxLayout()
+        r.addLayout(self.status_chip_host)
+        r.addWidget(self.win._section_label("Sistemin önerisi"))
+        self.cand_box = QVBoxLayout()
+        self.cand_box.setSpacing(6)
+        r.addLayout(self.cand_box)
+        self.note = QLabel("")
+        self.note.setObjectName("noteText")
+        self.note.setWordWrap(True)
+        r.addWidget(self.note)
+
+        r.addWidget(self.win._section_label("Başka oyuncu"))
+        pick_row = QHBoxLayout()
+        pick_row.setSpacing(8)
+        self.combo = QComboBox()
+        self.combo.setEditable(True)
+        self.combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.combo.setMinimumHeight(36)
+        pick_row.addWidget(self.combo, 1)
+        move_btn = QPushButton("Taşı")
+        move_btn.setObjectName("smallBtn")
+        move_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        move_btn.clicked.connect(self._assign_combo)
+        pick_row.addWidget(move_btn)
+        r.addLayout(pick_row)
+
+        self.ref_check = QCheckBox("Bu yüzü referansa ekle (sonraki ayıklamalar iyileşir)")
+        self.ref_check.setChecked(True)
+        r.addWidget(self.ref_check)
+
+        self.none_btn = QPushButton("Hiçbiri  (X)")
+        self.none_btn.setObjectName("outlineSmall")
+        self.none_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.none_btn.clicked.connect(self._assign_none)
+        r.addWidget(self.none_btn)
+
+        nav = QHBoxLayout()
+        nav.setSpacing(8)
+        for text, slot in (("← Önceki", self._prev), ("Atla →", self._skip), ("Geri al  (Z)", self._undo)):
+            b = QPushButton(text)
+            b.setObjectName("outlineSmall")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(slot)
+            nav.addWidget(b)
+        r.addLayout(nav)
+
+        r.addStretch(1)
+        self.ref_info = QLabel("")
+        self.ref_info.setObjectName("dateSub")
+        self.ref_info.setWordWrap(True)
+        r.addWidget(self.ref_info)
+        self.ref_btn = QPushButton("Referansları güncelle")
+        self.ref_btn.setObjectName("smallBtn")
+        self.ref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ref_btn.clicked.connect(self._flush_refs)
+        self.ref_btn.setVisible(False)
+        r.addWidget(self.ref_btn)
+        hint = QLabel("Enter: öneriyi onayla · 1/2/3: aday seç · → atla · ← geri · X hiçbiri · Z geri al")
+        hint.setObjectName("dateSub")
+        hint.setWordWrap(True)
+        r.addWidget(hint)
+        row.addWidget(right)
+        outer.addLayout(row, 1)
+
+    def _install_shortcuts(self):
+        self._shortcuts = []
+
+        def add(seq, fn):
+            sc = QShortcut(QKeySequence(seq), self.win)
+            sc.setContext(Qt.ShortcutContext.WindowShortcut)
+            sc.setEnabled(False)  # yalnızca bu sayfa görünürken açık (başka sayfalardaki Enter/rakamlar etkilenmesin)
+            sc.activated.connect(lambda fn=fn: self._key(fn))
+            self._shortcuts.append(sc)
+        add("Return", self._enter)
+        add("Enter", self._enter)
+        add("Right", self._skip)
+        add("Left", self._prev)
+        add("X", self._assign_none)
+        add("Z", self._undo)
+        add("Ctrl+Z", self._undo)
+        for i in (1, 2, 3):
+            add(str(i), lambda i=i: self._pick_candidate(i - 1))
+
+    def _key(self, fn):
+        if self.win.stack.currentWidget() is not self:
+            return
+        fw = QApplication.focusWidget()
+        typing = isinstance(fw, (QLineEdit, QPlainTextEdit)) or (fw is not None and fw.parent() is self.combo)
+        if typing and fn not in (self._enter,):
+            return
+        if typing and fn == self._enter and self.combo.lineEdit() is not None and self.combo.lineEdit().hasFocus():
+            self._assign_combo()
+            return
+        fn()
+
+    # ---------------------------------------------------------------- veri
+    def on_show(self):
+        folder = self.win.work_folder
+        if folder != self.root:
+            self.set_folder(folder)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        for sc in self._shortcuts:
+            sc.setEnabled(True)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        for sc in self._shortcuts:
+            sc.setEnabled(False)
+        if self.pending_refs and not self.win._is_running:
+            self._flush_refs()
+
+    def _set_filter(self, name: str):
+        self.filter = name
+        self._build_queue()
+
+    def set_folder(self, folder: str):
+        self.root = folder if folder and os.path.isdir(folder) else ""
+        self.csv_path = os.path.join(self.root, "Rapor.csv") if self.root else ""
+        self.rows = read_report(self.csv_path) if self.csv_path and os.path.isfile(self.csv_path) else []
+        self.folder_label.set_full_text(self.root or "Çıktı klasörü seçilmedi")
+        self.folder_label.setProperty("filled", bool(self.root))
+        repolish(self.folder_label)
+        names = set(load_reference_counts(self.win.ref_folder).keys())
+        if self.root:
+            for e in build_share_entries(self.root):
+                if e["name"] != GOALKEEPER_FOLDER_NAME:
+                    names.add(e["name"])
+        self.names = sorted(names, key=turkish_lower)
+        self.combo.clear()
+        self.combo.addItems(self.names)
+        self.combo.setCurrentIndex(-1)
+        self.undo_stack.clear()
+        self._build_queue()
+
+    def _build_queue(self):
+        scored = []
+        for idx, r in enumerate(self.rows):
+            res = r["Sonuç"]
+            if self.filter == self.FILTER_MIXED:
+                if res != "Karışık":
+                    continue
+                cands = parse_candidates(r["Adaylar"])
+                key = -(cands[0][1] if cands else -1.0)
+            else:
+                if res != "Eşleşti":
+                    continue
+                try:
+                    sc = float(r["Skor"].replace(",", "."))
+                except ValueError:
+                    continue
+                if sc >= REVIEW_LOW_SCORE:
+                    continue
+                key = sc
+            if report_row_path(self.root, r):
+                scored.append((key, idx))
+        scored.sort()
+        self.queue = [i for _, i in scored]
+        self.pos = 0
+        self._show()
+
+    # ---------------------------------------------------------------- gösterim
+    def _current_row(self):
+        if 0 <= self.pos < len(self.queue):
+            return self.rows[self.queue[self.pos]]
+        return None
+
+    def _show(self):
+        clear_layout(self.cand_box)
+        clear_layout(self.status_chip_host)
+        row = self._current_row()
+        total = len(self.queue)
+        if not self.root or not self.rows:
+            self.counter.setText("")
+            self.preview.clear()
+            self.preview.setText("Bir çıktı klasörü seç (içinde Rapor.csv olmalı).\nSon ayıklamanın klasörü için üstteki 'Klasör seç'i ya da Raporlar sayfasındaki 'İncele' düğmesini kullan.")
+            self.file_label.set_full_text("")
+            self.note.setText("")
+            return
+        if row is None:
+            self.counter.setText(f"{total} kayıt")
+            self.preview.clear()
+            self.preview.setText("İncelenecek fotoğraf kalmadı." if total == 0 or self.pos >= total else "")
+            self.file_label.set_full_text("")
+            self.note.setText("")
+            self._refresh_ref_info()
+            return
+        self.counter.setText(f"{self.pos + 1} / {total}")
+        path = report_row_path(self.root, row)
+        self._current_path = path
+        self.file_label.set_full_text(path)
+        self._render_preview()
+        res = row["Sonuç"]
+        done = res not in ("Karışık", "Eşleşti")
+        if done:
+            self.status_chip_host.addWidget(make_chip(f"{res}: {row['Oyuncu']}", K_GREEN_HI, K_GREEN_BG))
+        elif self.filter == self.FILTER_LOW:
+            self.status_chip_host.addWidget(make_chip(f"Düşük güvenli · skor {row['Skor']}", K_AMBER, K_AMBER_BG))
+        else:
+            self.status_chip_host.addWidget(make_chip("Eşleşmedi", K_AMBER, K_AMBER_BG))
+        self.status_chip_host.addStretch(1)
+
+        if self.filter == self.FILTER_LOW:
+            player = row["Oyuncu"]
+            b = QPushButton(f"Doğru: {player}  (Enter)")
+            b.setObjectName("startBtn")
+            b.setMinimumHeight(40)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda: self._assign(player))
+            self.cand_box.addWidget(b)
+            self.note.setText("Sistem bu fotoğrafı düşük güvenle bu oyuncuya vermişti. Yanlışsa aşağıdan doğru oyuncuyu seç ya da 'Hiçbiri'.")
+            self.none_btn.setText("Hiçbiri → KARISIK'a al  (X)")
+        else:
+            cands = parse_candidates(row["Adaylar"])
+            if cands:
+                for i, (n, sc) in enumerate(cands, 1):
+                    b = QPushButton(f"{i} · {n}   {sc:.2f}")
+                    b.setObjectName("startBtn" if i == 1 else "outlineSmall")
+                    b.setMinimumHeight(40 if i == 1 else 34)
+                    b.setCursor(Qt.CursorShape.PointingHandCursor)
+                    b.clicked.connect(lambda checked=False, n=n: self._assign(n))
+                    self.cand_box.addWidget(b)
+                self.note.setText(f"Neden eşleşmedi: {row['Not'] or '—'}")
+            else:
+                self.note.setText(f"Sistem aday bulamadı ({row['Not'] or 'yüz yok'}). Gerekirse aşağıdan oyuncu seç; yoksa 'Hiçbiri'.")
+            self.none_btn.setText("Hiçbiri / karışık kalsın  (X)")
+        self._refresh_ref_info()
+
+    def _render_preview(self):
+        path = self._current_path
+        if not path:
+            return
+        w, h = max(480, self.preview.width() - 6), max(320, self.preview.height() - 6)
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        size = reader.size()
+        if size.isValid() and (size.width() > w or size.height() > h):
+            size.scale(w, h, Qt.AspectRatioMode.KeepAspectRatio)
+            reader.setScaledSize(size)
+        img = reader.read()
+        if img.isNull():
+            self.preview.setText("Önizleme açılamadı")
+        else:
+            self.preview.setPixmap(QPixmap.fromImage(img))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_path and self.isVisible():
+            self._resize_timer.start()
+
+    def _refresh_ref_info(self):
+        n = len(self.pending_refs)
+        self.ref_btn.setVisible(n > 0)
+        if n:
+            self.ref_info.setText(f"Referansa eklenecek: {n} yüz. Sayfadan çıkınca ya da düğmeyle işlenir.")
+        elif self.ref_worker is not None and self.ref_worker.isRunning():
+            self.ref_info.setText("Referanslar güncelleniyor…")
+        else:
+            self.ref_info.setText("")
+
+    # ---------------------------------------------------------------- eylemler
+    def _enter(self):
+        row = self._current_row()
+        if row is None:
+            return
+        if self.filter == self.FILTER_LOW:
+            self._assign(row["Oyuncu"])
+            return
+        cands = parse_candidates(row["Adaylar"])
+        if cands:
+            self._assign(cands[0][0])
+        elif self.combo.currentText().strip():
+            self._assign_combo()
+
+    def _pick_candidate(self, i: int):
+        row = self._current_row()
+        if row is None or self.filter == self.FILTER_LOW:
+            return
+        cands = parse_candidates(row["Adaylar"])
+        if i < len(cands):
+            self._assign(cands[i][0])
+
+    def _assign_combo(self):
+        text = self.combo.currentText().strip()
+        if not text:
+            return
+        match = next((n for n in self.names if turkish_lower(n) == turkish_lower(text)), None)
+        self._assign(match or turkish_title(text))
+
+    def _save(self):
+        try:
+            if self.csv_path and self.rows:
+                backup = os.path.join(self.root, "Rapor_onceki.csv")
+                if not os.path.exists(backup) and os.path.isfile(self.csv_path):
+                    shutil.copy2(self.csv_path, backup)
+                write_report(self.csv_path, self.rows)
+        except Exception as e:
+            QMessageBox.warning(self, "Rapor kaydedilemedi", str(e))
+
+    def _advance(self):
+        self.pos += 1
+        self._show()
+
+    def _assign(self, player: str):
+        row = self._current_row()
+        if row is None or not player or player == "-":
+            return
+        src = report_row_path(self.root, row)
+        if not src:
+            QMessageBox.warning(self, "Dosya yok", "Bu fotoğraf diskte bulunamadı (taşınmış ya da silinmiş olabilir).")
+            return
+        idx = self.queue[self.pos]
+        old = dict(row)
+        gk = {strip_accents_upper(g) for g in GOALKEEPER_POOL}
+        dest_dir = os.path.join(self.root, GOALKEEPER_FOLDER_NAME if strip_accents_upper(player) in gk else player)
+        moved = os.path.abspath(os.path.dirname(src)) != os.path.abspath(dest_dir)
+        new = src
+        try:
+            if moved:
+                os.makedirs(dest_dir, exist_ok=True)
+                new = unique_destination_path(dest_dir, os.path.basename(src))
+                shutil.move(src, new)
+        except Exception as e:
+            QMessageBox.warning(self, "Taşınamadı", str(e))
+            return
+        row["Sonuç"] = "Eşleşti (elle)" if (old["Sonuç"] != "Eşleşti" or old["Oyuncu"] != player) else "Eşleşti (onaylı)"
+        row["Oyuncu"] = player
+        row["Konum"] = os.path.relpath(new, self.root)
+        self._save()
+        self.undo_stack.append((self.pos, idx, old, src, new, moved))
+        if self.ref_check.isChecked() and (old["Sonuç"] != "Eşleşti" or old["Oyuncu"] != player):
+            self.pending_refs.append((player, new))
+        self._advance()
+
+    def _assign_none(self):
+        row = self._current_row()
+        if row is None:
+            return
+        idx = self.queue[self.pos]
+        old = dict(row)
+        src = report_row_path(self.root, row)
+        new, moved = src, False
+        if self.filter == self.FILTER_LOW:
+            try:
+                dest_dir = os.path.join(self.root, MIXED_FOLDER_NAME)
+                os.makedirs(dest_dir, exist_ok=True)
+                new = unique_destination_path(dest_dir, os.path.basename(src))
+                shutil.move(src, new)
+                moved = True
+            except Exception as e:
+                QMessageBox.warning(self, "Taşınamadı", str(e))
+                return
+            row["Sonuç"], row["Oyuncu"], row["Konum"] = "Karışık (elle)", "-", os.path.relpath(new, self.root)
+        else:
+            row["Sonuç"] = "Karışık (incelendi)"
+        self._save()
+        self.undo_stack.append((self.pos, idx, old, src, new, moved))
+        self._advance()
+
+    def _undo(self):
+        if not self.undo_stack:
+            return
+        pos, idx, old, src, new, moved = self.undo_stack.pop()
+        try:
+            if moved and os.path.isfile(new):
+                os.makedirs(os.path.dirname(src), exist_ok=True)
+                shutil.move(new, src)
+        except Exception as e:
+            QMessageBox.warning(self, "Geri alınamadı", str(e))
+            return
+        self.rows[idx].update(old)
+        self.pending_refs = [(p, f) for p, f in self.pending_refs if f != new]
+        self._save()
+        self.pos = pos
+        self._show()
+
+    def _skip(self):
+        if self.pos < len(self.queue):
+            self._advance()
+
+    def _prev(self):
+        if self.pos > 0:
+            self.pos -= 1
+            self._show()
+
+    # ---------------------------------------------------------------- referans güncelleme
+    def _flush_refs(self):
+        if not self.pending_refs:
+            return
+        if self.win._is_running:
+            self.ref_info.setText("Ayıklama sürerken referans eklenmez; bitince tekrar dene.")
+            return
+        if self.ref_worker is not None and self.ref_worker.isRunning():
+            return
+        if not self.win.ref_folder or not os.path.isdir(self.win.ref_folder):
+            self.ref_info.setText("Referans klasörü seçili değil — Ayıklama sayfasında seçince eklenir.")
+            return
+        tasks = [(p, f) for p, f in self.pending_refs if os.path.isfile(f)]
+        self.pending_refs = []
+        self.ref_worker = RefAddWorker(self.win.ref_folder, tasks)
+        self.ref_worker.log_signal.connect(lambda m, lvl: self.win._append_log(m, lvl))
+        self.ref_worker.done_signal.connect(self._refs_done)
+        self.ref_worker.start()
+        self._refresh_ref_info()
+
+    def _refs_done(self, added: int, skipped: int):
+        self.ref_info.setText(f"Referans güncellendi: {added} yeni, {skipped} atlandı. Sonraki ayıklamada otomatik kullanılır.")
+        self.ref_btn.setVisible(bool(self.pending_refs))
+
+
+
+# ==========================================================================================
+# SAYFA: PAYLAŞIM — Drive link + mesaj listesi · İçerik dengesi · Sosyal medya boyutları
+# ==========================================================================================
+
+class SharePage(QWidget):
+    TABS = ("Paylaşım", "İçerik dengesi", "Sosyal medya")
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.root = ""
+        self.extra = load_medya_extra()
+        self.social_worker = None
+        self._social_extra_folder = ""
+        self._link_edits: dict = {}
+        self._msg_timer = QTimer(self)
+        self._msg_timer.setSingleShot(True)
+        self._msg_timer.setInterval(600)
+        self._msg_timer.timeout.connect(self._save_message)
+        self._build()
+
+    # ---------------------------------------------------------------- iskelet
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(16)
+
+        top, t = self.win._card(margins=(18, 14, 18, 14), spacing=10)
+        bar = QHBoxLayout()
+        bar.setSpacing(10)
+        self.folder_label = ElidedLabel("Çıktı klasörü seçilmedi")
+        self.folder_label.setObjectName("pathLabel")
+        bar.addWidget(self.folder_label, 1)
+        self.tab_group = QButtonGroup(self)
+        self.tab_group.setExclusive(True)
+        for i, name in enumerate(self.TABS):
+            b = QPushButton(name)
+            b.setObjectName("segBtn")
+            b.setCheckable(True)
+            b.setChecked(i == 0)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda checked=False, i=i: self._set_tab(i))
+            self.tab_group.addButton(b, i)
+            bar.addWidget(b)
+        pick = QPushButton("Klasör seç")
+        pick.setObjectName("outlineSmall")
+        pick.setCursor(Qt.CursorShape.PointingHandCursor)
+        pick.clicked.connect(self.win.choose_work_folder)
+        bar.addWidget(pick)
+        t.addLayout(bar)
+        outer.addWidget(top)
+
+        self.tabs = QStackedWidget()
+        self.tabs.addWidget(self._build_share_tab())
+        self.tabs.addWidget(self._build_balance_tab())
+        self.tabs.addWidget(self._build_social_tab())
+        outer.addWidget(self.tabs, 1)
+
+    def _set_tab(self, i: int):
+        self.tabs.setCurrentIndex(i)
+        self._refresh_tab()
+
+    def on_show(self):
+        if self.win.work_folder != self.root:
+            self.set_folder(self.win.work_folder)
+        else:
+            self._refresh_tab()
+
+    def set_folder(self, folder: str):
+        self.root = folder if folder and os.path.isdir(folder) else ""
+        self.folder_label.set_full_text(self.root or "Çıktı klasörü seçilmedi")
+        self.folder_label.setProperty("filled", bool(self.root))
+        repolish(self.folder_label)
+        base = os.path.basename(self.root.rstrip("/\\")) if self.root else ""
+        if base and not self.event_edit.text().strip():
+            self.event_edit.setText(base)
+        self._refresh_tab()
+
+    def _refresh_tab(self):
+        i = self.tabs.currentIndex()
+        if i == 0:
+            self._refresh_share()
+        elif i == 1:
+            self._refresh_balance()
+        else:
+            self._refresh_social_summary()
+
+    def _empty_hint(self, text: str) -> QLabel:
+        lab = QLabel(text)
+        lab.setObjectName("emptyHint")
+        lab.setWordWrap(True)
+        return lab
+
+    # ---------------------------------------------------------------- 1) Paylaşım
+    def _build_share_tab(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(16)
+
+        opts, o = self.win._card(margins=(18, 14, 18, 14), spacing=10)
+        row1 = QHBoxLayout()
+        row1.setSpacing(10)
+        row1.addWidget(QLabel("Etkinlik"))
+        self.event_edit = QLineEdit()
+        self.event_edit.setPlaceholderText("örn. Maç günü, 19 Kasım")
+        self.event_edit.setFixedWidth(240)
+        row1.addWidget(self.event_edit)
+        row1.addSpacing(16)
+        row1.addWidget(QLabel("Oyuncu başına en iyi"))
+        self.best_spin = QSpinBox()
+        self.best_spin.setRange(1, 30)
+        self.best_spin.setValue(int(self.extra.get("best_count", DEFAULT_BEST_COUNT)))
+        row1.addWidget(self.best_spin)
+        row1.addWidget(QLabel("kare"))
+        self.make_sel_btn = QPushButton("Seçilenleri oluştur")
+        self.make_sel_btn.setObjectName("smallBtn")
+        self.make_sel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.make_sel_btn.setToolTip("Her oyuncunun en net / en büyük / en iyi kadrajlı karelerini SECILENLER klasörüne kopyalar.")
+        self.make_sel_btn.clicked.connect(self._make_selections)
+        row1.addWidget(self.make_sel_btn)
+        row1.addStretch(1)
+        o.addLayout(row1)
+        self.msg_edit = QPlainTextEdit()
+        self.msg_edit.setPlainText(str(self.extra.get("share_message") or DEFAULT_SHARE_MESSAGE))
+        self.msg_edit.setFixedHeight(68)
+        self.msg_edit.textChanged.connect(self._msg_timer.start)
+        o.addWidget(self.msg_edit)
+        hint = QLabel("Mesaj şablonu: {ad} · {etkinlik} · {adet} · {link} yer tutucuları her oyuncu için doldurulur.")
+        hint.setObjectName("dateSub")
+        o.addWidget(hint)
+        lay.addWidget(opts)
+
+        card, c = self.win._card(margins=(18, 16, 18, 14), spacing=8)
+        head = QHBoxLayout()
+        self.share_count_label = self.win._section_label("Oyuncular")
+        head.addWidget(self.share_count_label)
+        head.addStretch(1)
+        self.share_status = QLabel("")
+        self.share_status.setObjectName("dateSub")
+        head.addWidget(self.share_status)
+        c.addLayout(head)
+        inner = QWidget()
+        self.share_rows = QVBoxLayout(inner)
+        self.share_rows.setContentsMargins(0, 0, 0, 0)
+        self.share_rows.setSpacing(0)
+        c.addWidget(self.win._scroll(inner), 1)
+        foot = QHBoxLayout()
+        foot.setSpacing(10)
+        for text, slot in (("Tüm mesajları kopyala", self._copy_all), ("Listeyi CSV kaydet", self._export_csv),
+                           ("Klasörü aç", self._open_root)):
+            b = QPushButton(text)
+            b.setObjectName("outlineSmall")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(slot)
+            foot.addWidget(b)
+        foot.addStretch(1)
+        c.addLayout(foot)
+        lay.addWidget(card, 1)
+        return page
+
+    def _links(self) -> dict:
+        return self.extra.setdefault("share_links", {}).setdefault(os.path.abspath(self.root), {})
+
+    def _save_message(self):
+        self.extra["share_message"] = self.msg_edit.toPlainText()
+        save_medya_extra(self.extra)
+
+    def _message_for(self, e: dict, link: str) -> str:
+        tpl = self.msg_edit.toPlainText().strip() or DEFAULT_SHARE_MESSAGE
+        shown = e["count"]
+        return (tpl.replace("{ad}", e["name"]).replace("{etkinlik}", self.event_edit.text().strip() or "etkinlik")
+                .replace("{adet}", str(shown)).replace("{link}", link.strip() or "[LİNK]"))
+
+    def _refresh_share(self):
+        clear_layout(self.share_rows)
+        self._link_edits = {}
+        if not self.root:
+            self.share_rows.addWidget(self._empty_hint("Önce bir çıktı klasörü seç (yüz ayıklamanın oluşturduğu tarih klasörü)."))
+            self.share_rows.addStretch(1)
+            self.share_count_label.setText(turkish_upper("Oyuncular"))
+            return
+        entries = build_share_entries(self.root)
+        self.share_count_label.setText(turkish_upper(f"Oyuncular · {len(entries)}"))
+        if not entries:
+            self.share_rows.addWidget(self._empty_hint("Bu klasörde oyuncu klasörü bulunamadı."))
+            self.share_rows.addStretch(1)
+            return
+        links = self._links()
+        for e in entries:
+            row = QFrame()
+            row.setObjectName("rowLine")
+            row.setFixedHeight(60)
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(10)
+            col = QVBoxLayout()
+            col.setSpacing(2)
+            name = ElidedLabel(e["name"])
+            name.setObjectName("bdName")
+            sub_text = f"{e['count']} fotoğraf" + (f" · {e['best']} seçilen" if e["best"] else "")
+            if e["keeper"]:
+                sub_text += " · kaleci"
+            sub = QLabel(sub_text)
+            sub.setObjectName("dateSub")
+            col.addWidget(name)
+            col.addWidget(sub)
+            namew = QWidget()
+            namew.setLayout(col)
+            namew.setFixedWidth(210)
+            rl.addWidget(namew)
+            edit = QLineEdit(links.get(e["name"], ""))
+            edit.setPlaceholderText("Drive linkini yapıştır")
+            edit.setMinimumHeight(34)
+            edit.editingFinished.connect(lambda n=e["name"], ed=edit: self._link_changed(n, ed.text()))
+            self._link_edits[e["name"]] = edit
+            rl.addWidget(edit, 1)
+            for text, path in (("Klasör", e["path"]), ("Seçilenler", e["best_path"])):
+                b = QPushButton(text)
+                b.setObjectName("outlineSmall")
+                b.setFixedHeight(32)
+                b.setEnabled(os.path.isdir(path))
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                b.clicked.connect(lambda checked=False, p=path: QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
+                rl.addWidget(b)
+            cp = QPushButton("Mesajı kopyala")
+            cp.setObjectName("smallBtn")
+            cp.setFixedHeight(32)
+            cp.setCursor(Qt.CursorShape.PointingHandCursor)
+            cp.clicked.connect(lambda checked=False, e=e, ed=edit, b=cp: self._copy_one(e, ed.text(), b))
+            rl.addWidget(cp)
+            self.share_rows.addWidget(row)
+        self.share_rows.addStretch(1)
+
+    def _link_changed(self, name: str, text: str):
+        links = self._links()
+        text = text.strip()
+        if text:
+            links[name] = text
+        else:
+            links.pop(name, None)
+        save_medya_extra(self.extra)
+
+    def _copy_one(self, e: dict, link: str, button: QPushButton):
+        if not link.strip():
+            self.share_status.setText("Önce bu oyuncunun Drive linkini yapıştır.")
+            return
+        QApplication.clipboard().setText(self._message_for(e, link))
+        _flash(button)
+
+    def _copy_all(self):
+        entries = build_share_entries(self.root)
+        links = self._links()
+        parts, missing = [], 0
+        for e in entries:
+            link = self._link_edits[e["name"]].text().strip() if e["name"] in self._link_edits else links.get(e["name"], "")
+            if not link:
+                missing += 1
+                continue
+            parts.append(f"— {e['name']} —\n{self._message_for(e, link)}")
+        if not parts:
+            self.share_status.setText("Hiçbir oyuncuya link girilmemiş.")
+            return
+        QApplication.clipboard().setText("\n\n".join(parts))
+        self.share_status.setText(f"{len(parts)} mesaj kopyalandı" + (f" · {missing} oyuncuda link eksik" if missing else ""))
+
+    def _export_csv(self):
+        if not self.root:
+            return
+        entries = build_share_entries(self.root)
+        links = self._links()
+        path = os.path.join(self.root, "Paylasim_Listesi.csv")
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f, delimiter=";")
+                w.writerow(["Oyuncu", "Fotoğraf", "Seçilen", "Link", "Mesaj"])
+                for e in entries:
+                    link = links.get(e["name"], "")
+                    w.writerow([e["name"], e["count"], e["best"], link, self._message_for(e, link) if link else ""])
+            self.share_status.setText(f"Kaydedildi: {os.path.basename(path)}")
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        except Exception as ex:
+            QMessageBox.warning(self, "Kaydedilemedi", str(ex))
+
+    def _open_root(self):
+        if self.root:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.root))
+
+    def _make_selections(self):
+        if not self.root:
+            self.share_status.setText("Önce çıktı klasörü seç.")
+            return
+        if not os.path.isfile(os.path.join(self.root, "Rapor.csv")):
+            QMessageBox.information(self, "Rapor yok", "Bu klasörde Rapor.csv yok; seçim yapılamaz.")
+            return
+        n = self.best_spin.value()
+        self.extra["best_count"] = n
+        save_medya_extra(self.extra)
+        if os.path.isdir(os.path.join(self.root, SELECTION_FOLDER_NAME)):
+            ans = QMessageBox.question(self, "Seçilenleri yenile",
+                                       f"{SELECTION_FOLDER_NAME} klasörü yeniden oluşturulacak; içindekiler silinip "
+                                       f"yeni seçim kopyalanır. Devam edilsin mi?")
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            made = build_selections(self.root, n)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.share_status.setText(f"{made} fotoğraf seçildi (oyuncu başına en fazla {n}).")
+        self._refresh_share()
+
+    # ---------------------------------------------------------------- 2) İçerik dengesi
+    def _build_balance_tab(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(16)
+        self.bal_chips_card, bc = self.win._card(margins=(18, 14, 18, 14), spacing=8)
+        self.bal_chips = QHBoxLayout()
+        self.bal_chips.setSpacing(10)
+        bc.addLayout(self.bal_chips)
+        lay.addWidget(self.bal_chips_card)
+        card, c = self.win._card(margins=(18, 16, 18, 14), spacing=8)
+        c.addWidget(self.win._section_label("Oyuncu başına fotoğraf sayısı"))
+        inner = QWidget()
+        self.bal_rows = QVBoxLayout(inner)
+        self.bal_rows.setContentsMargins(0, 0, 0, 0)
+        self.bal_rows.setSpacing(0)
+        c.addWidget(self.win._scroll(inner), 1)
+        lay.addWidget(card, 1)
+        return page
+
+    def _refresh_balance(self):
+        clear_layout(self.bal_rows)
+        clear_layout(self.bal_chips)
+        if not self.root:
+            self.bal_rows.addWidget(self._empty_hint("Önce bir çıktı klasörü seç."))
+            self.bal_rows.addStretch(1)
+            return
+        import statistics
+        rows = read_report(os.path.join(self.root, "Rapor.csv"))
+        counts: dict = {}
+        if rows:
+            for r in rows:
+                if r["Sonuç"].startswith("Eşleşti") or r["Sonuç"].startswith("Kaleci"):
+                    n = r["Oyuncu"].strip()
+                    if n and n != "-":
+                        counts[n] = counts.get(n, 0) + 1
+            mixed = sum(1 for r in rows if r["Sonuç"].startswith("Karışık"))
+        else:
+            for e in build_share_entries(self.root):
+                if e["name"] != GOALKEEPER_FOLDER_NAME:
+                    counts[e["name"]] = e["count"]
+            mixed = count_images(os.path.join(self.root, MIXED_FOLDER_NAME))
+        ref_counts = load_reference_counts(self.win.ref_folder)
+        for n in ref_counts:
+            counts.setdefault(n, 0)
+        if not counts:
+            self.bal_rows.addWidget(self._empty_hint("Bu klasörden oyuncu verisi okunamadı."))
+            self.bal_rows.addStretch(1)
+            return
+        hist_totals: dict = {}
+        for h in load_history()[:5]:
+            for n, v in (h.get("per_player") or {}).items():
+                hist_totals[n] = hist_totals.get(n, 0) + int(v)
+        nonzero = [v for v in counts.values() if v > 0]
+        median = statistics.median(nonzero) if nonzero else 0
+        low_limit = max(1.0, 0.5 * median)
+        zero = [n for n, v in counts.items() if v == 0]
+        few = [n for n, v in counts.items() if 0 < v < low_limit]
+        single = [n for n in counts if ref_counts.get(n) == 1]
+        total_photos = sum(counts.values())
+        self.bal_chips.addWidget(make_chip(f"{len(counts)} oyuncu · {total_photos} kare", K_SOFT, "#1B2A22"))
+        self.bal_chips.addWidget(make_chip(f"Hiç çıkmayan: {len(zero)}", K_RED_HI if zero else K_GREEN_HI, K_RED_BG if zero else K_GREEN_BG))
+        self.bal_chips.addWidget(make_chip(f"Az çıkan: {len(few)}", K_AMBER if few else K_GREEN_HI, K_AMBER_BG if few else K_GREEN_BG))
+        if ref_counts:
+            self.bal_chips.addWidget(make_chip(f"Tek referanslı: {len(single)}", K_BLUE, K_BLUE_BG))
+        if rows:
+            self.bal_chips.addWidget(make_chip(f"Karışık: {mixed}", K_MUTED, "#1B2A22"))
+        self.bal_chips.addStretch(1)
+
+        top = max(counts.values()) or 1
+        for n, v in sorted(counts.items(), key=lambda kv: (kv[1], turkish_lower(kv[0]))):
+            row = QFrame()
+            row.setObjectName("rowLine")
+            row.setFixedHeight(46)
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(12)
+            name = ElidedLabel(n)
+            name.setObjectName("bdName")
+            name.setFixedWidth(200)
+            rl.addWidget(name)
+            color = K_RED_HI if v == 0 else (K_AMBER if v < low_limit else K_GREEN)
+            rl.addWidget(HBar(v / float(top), color), 1)
+            cnt = QLabel(str(v))
+            cnt.setObjectName("valueMono")
+            cnt.setFixedWidth(44)
+            cnt.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            rl.addWidget(cnt)
+            hist = QLabel(f"son 5 işlem: {hist_totals.get(n, 0)}" if hist_totals else "")
+            hist.setObjectName("dateSub")
+            hist.setFixedWidth(120)
+            rl.addWidget(hist)
+            if v == 0:
+                rl.addWidget(make_chip("Hiç çıkmadı", K_RED_HI, K_RED_BG))
+            elif v < low_limit:
+                rl.addWidget(make_chip("Az çıktı", K_AMBER, K_AMBER_BG))
+            else:
+                spacer = QLabel("")
+                spacer.setFixedWidth(80)
+                rl.addWidget(spacer)
+            if ref_counts.get(n) == 1:
+                rl.addWidget(make_chip("1 referans", K_BLUE, K_BLUE_BG))
+            self.bal_rows.addWidget(row)
+        self.bal_rows.addStretch(1)
+
+    # ---------------------------------------------------------------- 3) Sosyal medya
+    def _build_social_tab(self) -> QWidget:
+        sx = self.extra.get("social", {})
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(16)
+        card, c = self.win._card(margins=(20, 18, 20, 16), spacing=14)
+
+        c.addWidget(self.win._section_label("Kaynak fotoğraflar"))
+        src_row = QHBoxLayout()
+        src_row.setSpacing(8)
+        self.src_group = QButtonGroup(self)
+        self.src_group.setExclusive(True)
+        self.src_buttons = {}
+        for name in ("Seçilenler", "Tüm oyuncu klasörleri", "Başka klasör"):
+            b = QPushButton(name)
+            b.setObjectName("segBtn")
+            b.setCheckable(True)
+            b.setChecked(name == sx.get("source", "Seçilenler"))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda checked=False, n=name: self._social_source(n))
+            self.src_group.addButton(b)
+            self.src_buttons[name] = b
+            src_row.addWidget(b)
+        self.other_btn = QPushButton("Klasör seç…")
+        self.other_btn.setObjectName("outlineSmall")
+        self.other_btn.clicked.connect(self._pick_other_folder)
+        self.other_btn.setVisible(sx.get("source") == "Başka klasör")
+        src_row.addWidget(self.other_btn)
+        src_row.addStretch(1)
+        c.addLayout(src_row)
+
+        c.addWidget(self.win._section_label("Boyutlar"))
+        fmt_row = QHBoxLayout()
+        fmt_row.setSpacing(18)
+        self.fmt_checks = {}
+        for key, label, tw, th in SOCIAL_FORMATS:
+            cb = QCheckBox(label)
+            cb.setChecked(key in sx.get("formats", []))
+            cb.toggled.connect(self._social_changed)
+            self.fmt_checks[key] = cb
+            fmt_row.addWidget(cb)
+        fmt_row.addStretch(1)
+        c.addLayout(fmt_row)
+
+        c.addWidget(self.win._section_label("Kadraj"))
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(8)
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.setExclusive(True)
+        self.mode_buttons = {}
+        for name in ("Kırp", "Sığdır"):
+            b = QPushButton(name)
+            b.setObjectName("segBtn")
+            b.setCheckable(True)
+            b.setChecked(name == sx.get("mode", "Kırp"))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(self._social_changed)
+            self.mode_group.addButton(b)
+            self.mode_buttons[name] = b
+            mode_row.addWidget(b)
+        mode_hint = QLabel("Kırp: yüzü kadrajda tutarak doldurur · Sığdır: fotoğrafın tamamı, arkası bulanık zemin")
+        mode_hint.setObjectName("dateSub")
+        mode_row.addWidget(mode_hint)
+        mode_row.addStretch(1)
+        c.addLayout(mode_row)
+
+        c.addWidget(self.win._section_label("Logo"))
+        logo_row = QHBoxLayout()
+        logo_row.setSpacing(10)
+        self.logo_check = QCheckBox("Kocaelispor logosu ekle")
+        self.logo_check.setChecked(bool(sx.get("logo", True)))
+        self.logo_check.toggled.connect(self._social_changed)
+        logo_row.addWidget(self.logo_check)
+        self.logo_pos = QComboBox()
+        self.logo_pos.addItems(LOGO_POSITIONS)
+        self.logo_pos.setCurrentText(sx.get("logo_pos", "Sağ alt"))
+        self.logo_pos.currentIndexChanged.connect(self._social_changed)
+        logo_row.addWidget(self.logo_pos)
+        logo_row.addWidget(QLabel("Genişlik %"))
+        self.logo_size = QSpinBox()
+        self.logo_size.setRange(6, 30)
+        self.logo_size.setValue(int(sx.get("logo_size", 14)))
+        self.logo_size.valueChanged.connect(self._social_changed)
+        logo_row.addWidget(self.logo_size)
+        logo_hint = QLabel("Story'de logo, Instagram arayüzünün kapatmayacağı güvenli alana yerleşir.")
+        logo_hint.setObjectName("dateSub")
+        logo_row.addWidget(logo_hint)
+        logo_row.addStretch(1)
+        c.addLayout(logo_row)
+        lay.addWidget(card)
+
+        run, r = self.win._card(margins=(20, 16, 20, 16), spacing=10)
+        self.social_summary = QLabel("")
+        self.social_summary.setObjectName("infoValue")
+        r.addWidget(self.social_summary)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        self.social_btn = QPushButton("Hazırla")
+        self.social_btn.setObjectName("startBtn")
+        self.social_btn.setFixedSize(180, 46)
+        self.social_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.social_btn.clicked.connect(self._social_run)
+        btn_row.addWidget(self.social_btn)
+        self.social_open = QPushButton("Çıktıyı aç")
+        self.social_open.setObjectName("outlineSmall")
+        self.social_open.setEnabled(False)
+        self.social_open.clicked.connect(self._social_open)
+        btn_row.addWidget(self.social_open)
+        btn_row.addStretch(1)
+        r.addLayout(btn_row)
+        self.social_bar = QProgressBar()
+        self.social_bar.setTextVisible(False)
+        self.social_bar.setFixedHeight(8)
+        self.social_bar.setStyleSheet(
+            f"QProgressBar {{ background: {K_LINE}; border: none; border-radius: 4px; }}"
+            f"QProgressBar::chunk {{ background: {K_GREEN}; border-radius: 4px; }}")
+        r.addWidget(self.social_bar)
+        self.social_status = QLabel("")
+        self.social_status.setObjectName("dateSub")
+        self.social_status.setWordWrap(True)
+        r.addWidget(self.social_status)
+        lay.addWidget(run)
+        lay.addStretch(1)
+        return page
+
+    def _social_source(self, name: str):
+        self.other_btn.setVisible(name == "Başka klasör")
+        self._social_changed()
+
+    def _pick_other_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Fotoğrafların bulunduğu klasörü seç")
+        if folder:
+            self._social_extra_folder = folder
+            self.other_btn.setText(os.path.basename(folder) or folder)
+            self._social_changed()
+
+    def _social_settings(self) -> dict:
+        source = next((n for n, b in self.src_buttons.items() if b.isChecked()), "Seçilenler")
+        mode = next((n for n, b in self.mode_buttons.items() if b.isChecked()), "Kırp")
+        return {"formats": [k for k, cb in self.fmt_checks.items() if cb.isChecked()], "mode": mode,
+                "logo": self.logo_check.isChecked(), "logo_pos": self.logo_pos.currentText(),
+                "logo_size": self.logo_size.value(), "source": source}
+
+    def _social_changed(self, *args):
+        self.extra["social"] = self._social_settings()
+        save_medya_extra(self.extra)
+        self._refresh_social_summary()
+
+    def _social_jobs(self) -> list:
+        s = self._social_settings()
+        return list_social_jobs(self.root, s["source"], self._social_extra_folder)
+
+    def _refresh_social_summary(self):
+        s = self._social_settings()
+        if s["source"] != "Başka klasör" and not self.root:
+            self.social_summary.setText("Önce çıktı klasörü seç.")
+            return
+        jobs = self._social_jobs()
+        nf = len(s["formats"])
+        if s["source"] == "Seçilenler" and not jobs:
+            self.social_summary.setText("SECILENLER klasörü boş. Paylaşım sekmesinde 'Seçilenleri oluştur'a bas ya da kaynağı değiştir.")
+        else:
+            self.social_summary.setText(f"{len(jobs)} fotoğraf × {nf} boyut = {len(jobs) * nf} görsel")
+
+    def _social_run(self):
+        if self.social_worker is not None and self.social_worker.isRunning():
+            self.social_worker.cancel()
+            self.social_btn.setEnabled(False)
+            return
+        s = self._social_settings()
+        if not s["formats"]:
+            self.social_status.setText("En az bir boyut seç.")
+            return
+        if s["source"] == "Başka klasör" and not self._social_extra_folder:
+            self.social_status.setText("Kaynak klasörü seç.")
+            return
+        base = self._social_extra_folder if s["source"] == "Başka klasör" else self.root
+        if not base:
+            self.social_status.setText("Önce çıktı klasörü seç.")
+            return
+        jobs = self._social_jobs()
+        if not jobs:
+            self.social_status.setText("İşlenecek fotoğraf bulunamadı.")
+            return
+        formats = [f for f in SOCIAL_FORMATS if f[0] in s["formats"]]
+        out_root = os.path.join(base, SOCIAL_FOLDER_NAME)
+        self._social_out = out_root
+        self.social_bar.setRange(0, len(jobs) * len(formats))
+        self.social_bar.setValue(0)
+        self.social_btn.setText("Durdur")
+        self.social_status.setText("Hazırlanıyor…")
+        self.social_worker = SocialWorker(jobs, out_root, formats, s["mode"], s["logo"], s["logo_pos"], s["logo_size"])
+        self.social_worker.progress_signal.connect(lambda d, t: (self.social_bar.setValue(d),
+                                                                  self.social_status.setText(f"{d} / {t}")))
+        self.social_worker.log_signal.connect(lambda m, lvl: self.win._append_log(m, lvl))
+        self.social_worker.done_signal.connect(self._social_done)
+        self.social_worker.start()
+
+    def _social_done(self, written: int, out_root: str):
+        self.social_btn.setText("Hazırla")
+        self.social_btn.setEnabled(True)
+        self.social_status.setText(f"{written} görsel hazırlandı → {out_root}")
+        self.social_open.setEnabled(os.path.isdir(out_root))
+        QApplication.beep()
+
+    def _social_open(self):
+        out = getattr(self, "_social_out", "")
+        if out and os.path.isdir(out):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(out))
+
+
+# ==========================================================================================
+# MAÇ GÜNÜ LİSTESİ (her maç için ayrı işaretlenebilir kontrol listesi)
+# ==========================================================================================
+
+class MatchdayDialog(QDialog):
+    def __init__(self, fx: dict, go_to, parent=None):
+        super().__init__(parent)
+        self.fx = fx
+        self.go_to = go_to
+        self.key = fixture_key(fx)
+        self.extra = load_medya_extra()
+        self.state = self.extra.setdefault("matchday", {}).setdefault(self.key, {"done": [], "custom": []})
+        self.setWindowTitle(f"Maç günü listesi — {fx['opponent']}")
+        self.resize(560, 700)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 20, 22, 18)
+        lay.setSpacing(12)
+        d = fx["date"]
+        title = QLabel(f"{KULUP_ADI} – {fx['opponent']}" if fx["home"] else f"{fx['opponent']} – {KULUP_ADI}")
+        title.setObjectName("pageTitle")
+        title.setWordWrap(True)
+        lay.addWidget(title)
+        sub = QLabel(f"{d.day} {TURKISH_MONTHS[d.month]} {d.year} · {DAYS_TR[d.weekday()]} · {fx['time']}")
+        sub.setObjectName("pageSub")
+        lay.addWidget(sub)
+        self.progress = QLabel("")
+        self.progress.setObjectName("infoValue")
+        lay.addWidget(self.progress)
+        inner = QWidget()
+        self.body = QVBoxLayout(inner)
+        self.body.setContentsMargins(0, 0, 8, 0)
+        self.body.setSpacing(6)
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.Shape.NoFrame)
+        area.setWidget(inner)
+        lay.addWidget(area, 1)
+        add_row = QHBoxLayout()
+        self.custom_edit = QLineEdit()
+        self.custom_edit.setPlaceholderText("Kendi maddeni ekle (ör. Tribün drone çekimi)")
+        self.custom_edit.returnPressed.connect(self._add_custom)
+        add_row.addWidget(self.custom_edit, 1)
+        add_btn = QPushButton("Ekle")
+        add_btn.setObjectName("smallBtn")
+        add_btn.clicked.connect(self._add_custom)
+        add_row.addWidget(add_btn)
+        lay.addLayout(add_row)
+        foot = QHBoxLayout()
+        clear_btn = QPushButton("Hepsini temizle")
+        clear_btn.setObjectName("outlineSmall")
+        clear_btn.clicked.connect(self._clear_all)
+        foot.addWidget(clear_btn)
+        foot.addStretch(1)
+        close_btn = QPushButton("Kapat")
+        close_btn.setObjectName("startBtn")
+        close_btn.setFixedSize(120, 40)
+        close_btn.clicked.connect(self.accept)
+        foot.addWidget(close_btn)
+        lay.addLayout(foot)
+        self._render()
+
+    @staticmethod
+    def progress_text(key: str) -> str:
+        st = load_medya_extra().get("matchday", {}).get(key, {})
+        total = sum(len(items) for _, items in MATCHDAY_PHASES) + len(st.get("custom", []))
+        done = len(st.get("done", []))
+        return f"{done}/{total}"
+
+    def _save(self):
+        save_medya_extra(self.extra)
+
+    def _toggle(self, item_id: str, checked: bool):
+        done = self.state.setdefault("done", [])
+        if checked and item_id not in done:
+            done.append(item_id)
+        elif not checked and item_id in done:
+            done.remove(item_id)
+        self._save()
+        self._update_progress()
+
+    def _update_progress(self):
+        total = sum(len(items) for _, items in MATCHDAY_PHASES) + len(self.state.get("custom", []))
+        valid = {i for _, items in MATCHDAY_PHASES for i, _, _ in items} | {f"c:{t}" for t in self.state.get("custom", [])}
+        done = len([i for i in self.state.get("done", []) if i in valid])
+        self.progress.setText(f"{done} / {total} tamamlandı")
+
+    def _render(self):
+        clear_layout(self.body)
+        done = set(self.state.get("done", []))
+        for phase, items in MATCHDAY_PHASES:
+            lab = QLabel(turkish_upper(phase))
+            lab.setObjectName("sectionLabel")
+            self.body.addWidget(lab)
+            for item_id, text, action in items:
+                self.body.addLayout(self._item_row(item_id, text, action, item_id in done, None))
+            self.body.addSpacing(6)
+        custom = self.state.get("custom", [])
+        if custom:
+            lab = QLabel(turkish_upper("Eklediklerim"))
+            lab.setObjectName("sectionLabel")
+            self.body.addWidget(lab)
+            for text in custom:
+                self.body.addLayout(self._item_row(f"c:{text}", text, "", f"c:{text}" in done, text))
+        self.body.addStretch(1)
+        self._update_progress()
+
+    def _item_row(self, item_id, text, action, checked, custom_text):
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        cb = QCheckBox(text)
+        cb.setChecked(checked)
+        cb.toggled.connect(lambda c, i=item_id: self._toggle(i, c))
+        row.addWidget(cb, 1)
+        if action:
+            label = {"extract": "Ayıklamaya git", "review": "İncelemeye git", "share": "Paylaşıma git"}[action]
+            page = {"extract": PAGE_EXTRACT, "review": PAGE_REVIEW, "share": PAGE_SHARE}[action]
+            b = QPushButton(label)
+            b.setObjectName("linkBtn")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda checked=False, p=page: (self.accept(), self.go_to(p)))
+            row.addWidget(b)
+        if custom_text is not None:
+            rm = QPushButton("Sil")
+            rm.setObjectName("linkBtn")
+            rm.setCursor(Qt.CursorShape.PointingHandCursor)
+            rm.clicked.connect(lambda checked=False, t=custom_text: self._remove_custom(t))
+            row.addWidget(rm)
+        return row
+
+    def _add_custom(self):
+        text = self.custom_edit.text().strip()
+        if not text:
+            return
+        custom = self.state.setdefault("custom", [])
+        if text not in custom:
+            custom.append(text)
+            self._save()
+        self.custom_edit.clear()
+        self._render()
+
+    def _remove_custom(self, text: str):
+        custom = self.state.setdefault("custom", [])
+        if text in custom:
+            custom.remove(text)
+        done = self.state.setdefault("done", [])
+        if f"c:{text}" in done:
+            done.remove(f"c:{text}")
+        self._save()
+        self._render()
+
+    def _clear_all(self):
+        self.state["done"] = []
+        self._save()
+        self._render()
+
+
+
 
 
 # ==========================================================================================
@@ -2841,6 +4745,7 @@ class MainWindow(QMainWindow):
 
         self.ref_folder = ""
         self.media_folder = ""
+        self.work_folder = ""   # İnceleme / Paylaşım sayfalarının üzerinde çalıştığı çıktı (tarih) klasörü
         self.worker: ExtractionWorker | None = None
         self._output_folder = ""
         self._csv_path = ""
@@ -2875,6 +4780,11 @@ class MainWindow(QMainWindow):
         self.clock_timer.start()
         self._refresh_club_cards()
         self._show_idle_state()
+        for entry in load_history():  # son ayıklamanın klasörü İnceleme/Paylaşım için hazır gelsin
+            folder = entry.get("klasor", "")
+            if folder and os.path.isdir(folder):
+                self.set_work_folder(folder)
+                break
         self._go_to(PAGE_HOME)
 
     # ==================================================================
@@ -2904,6 +4814,18 @@ class MainWindow(QMainWindow):
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         return label
 
+    def set_work_folder(self, folder: str):
+        """İnceleme ve Paylaşım sayfalarının ortak çıktı klasörünü ayarlar."""
+        self.work_folder = folder if folder and os.path.isdir(folder) else ""
+        self.review_page.set_folder(self.work_folder)
+        self.share_page.set_folder(self.work_folder)
+
+    def choose_work_folder(self):
+        start = self.work_folder or get_desktop_path()
+        folder = QFileDialog.getExistingDirectory(self, "Çıktı (tarih) klasörünü seç — içinde Rapor.csv olmalı", start)
+        if folder:
+            self.set_work_folder(folder)
+
     def _scroll(self, widget: QWidget) -> QScrollArea:
         area = QScrollArea()
         area.setWidgetResizable(True)
@@ -2932,6 +4854,10 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_home_page())        # PAGE_HOME
         self.stack.addWidget(self._build_extract_page())     # PAGE_EXTRACT
+        self.review_page = ReviewPage(self)
+        self.stack.addWidget(self.review_page)               # PAGE_REVIEW
+        self.share_page = SharePage(self)
+        self.stack.addWidget(self.share_page)                # PAGE_SHARE
         self.stack.addWidget(self._build_matches_page())     # PAGE_MATCHES
         self.stack.addWidget(self._build_birthdays_page())   # PAGE_BIRTHDAYS
         self.stack.addWidget(self._build_press_page())       # PAGE_PRESS
@@ -2954,9 +4880,14 @@ class MainWindow(QMainWindow):
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
         self.nav_buttons: list[QToolButton] = []
+        nav_inner = QWidget()
+        nav_layout = QVBoxLayout(nav_inner)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(4)
         for index, (icon_name, label) in enumerate((
-                ("home", "Ana Sayfa"), ("image", "Ayıklama"), ("trophy", "Maçlar"), ("gift", "Doğum"),
-                ("megaphone", "Basın"), ("report", "Raporlar"), ("sliders", "Ayarlar"))):
+                ("home", "Ana Sayfa"), ("image", "Ayıklama"), ("check", "İnceleme"), ("share", "Paylaşım"),
+                ("trophy", "Maçlar"), ("gift", "Doğum"), ("megaphone", "Basın"), ("report", "Raporlar"),
+                ("sliders", "Ayarlar"))):
             btn = QToolButton()
             btn.setObjectName("navBtn")
             btn.setCheckable(True)
@@ -2966,14 +4897,24 @@ class MainWindow(QMainWindow):
             if not icon.isNull():
                 btn.setIcon(icon)
                 btn.setIconSize(QSize(22, 22))
-            btn.setFixedSize(66, 58)
+            btn.setFixedSize(66, 54)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.nav_group.addButton(btn, index)
             self.nav_buttons.append(btn)
-            layout.addWidget(btn, 0, Qt.AlignmentFlag.AlignHCenter)
+            nav_layout.addWidget(btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        nav_layout.addStretch(1)
         self.nav_group.idClicked.connect(self._go_to)
-
-        layout.addStretch(1)
+        # Pencere alçaksa menü kendi içinde kayar; alttaki sosyal/departman düğmeleri sabit kalır.
+        nav_scroll = QScrollArea()
+        nav_scroll.setWidgetResizable(True)
+        nav_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        nav_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        nav_scroll.setFixedWidth(66)
+        nav_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }"
+                                 "QScrollArea > QWidget > QWidget { background: transparent; }")
+        nav_scroll.setWidget(nav_inner)
+        layout.addWidget(nav_scroll, 1, Qt.AlignmentFlag.AlignHCenter)
 
         switch_btn = QPushButton()
         switch_btn.setObjectName("iconBtn")
@@ -3061,7 +5002,11 @@ class MainWindow(QMainWindow):
         title, sub = PAGE_META[index]
         self.page_title.setText(title)
         self.page_sub.setText(sub)
-        if index == PAGE_MATCHES:
+        if index == PAGE_REVIEW:
+            self.review_page.on_show()
+        elif index == PAGE_SHARE:
+            self.share_page.on_show()
+        elif index == PAGE_MATCHES:
             self._refresh_matches_page()
         elif index == PAGE_BIRTHDAYS:
             self._refresh_birthdays_page()
@@ -3562,6 +5507,13 @@ class MainWindow(QMainWindow):
             empty.setObjectName("emptyHint")
             self.birthday_rows.addWidget(empty)
             return
+        soon = [b for b in birthdays if b["days_left"] <= 1]
+        for b in soon:
+            when = "Bugün" if b["days_left"] == 0 else "Yarın"
+            banner = make_chip(f"{when} {b['name']} doğum günü — paylaşım hazırla", K_AMBER, K_AMBER_BG)
+            banner.setWordWrap(True)
+            self.birthday_rows.addWidget(banner)
+            self.birthday_rows.addSpacing(6)
         for b in birthdays:
             row = QFrame()
             row.setObjectName("rowLine")
@@ -3752,6 +5704,21 @@ class MainWindow(QMainWindow):
             cell.addWidget(val)
             info.addLayout(cell, 0, col)
         self.match_hero_layout.addLayout(info)
+
+        md_row = QHBoxLayout()
+        md_btn = QPushButton(f"Maç günü listesi  ·  {MatchdayDialog.progress_text(fixture_key(fx))}")
+        md_btn.setObjectName("outlineSmall")
+        md_btn.setFixedHeight(34)
+        md_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        md_btn.clicked.connect(lambda checked=False, fx=fx: self._open_matchday(fx))
+        md_row.addWidget(md_btn)
+        md_row.addStretch(1)
+        self.match_hero_layout.addLayout(md_row)
+
+    def _open_matchday(self, fx: dict):
+        dlg = MatchdayDialog(fx, self._go_to, self)
+        dlg.exec()
+        self._refresh_match_hero()
 
     def _big_team(self, name: str) -> QVBoxLayout:
         col = QVBoxLayout()
@@ -4081,6 +6048,20 @@ class MainWindow(QMainWindow):
             folder_btn.setToolTip(folder if folder_btn.isEnabled() else
                                   f"Klasör bulunamadı (taşınmış ya da silinmiş olabilir):\n{folder or '(kayıtlı yol yok)'}")
             csv_btn.clicked.connect(lambda checked=False, p=csv_file: QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
+            review_btn = QPushButton("İncele")
+            review_btn.setObjectName("outlineSmall")
+            review_btn.setFixedHeight(32)
+            review_btn.setEnabled(bool(folder) and os.path.isfile(os.path.join(folder, "Rapor.csv")))
+            review_btn.setToolTip("Karışık ve düşük güvenli eşleşmeleri tek tek onayla / düzelt")
+            review_btn.clicked.connect(lambda checked=False, p=folder: (self.set_work_folder(p), self._go_to(PAGE_REVIEW)))
+            share_btn = QPushButton("Paylaş")
+            share_btn.setObjectName("outlineSmall")
+            share_btn.setFixedHeight(32)
+            share_btn.setEnabled(bool(folder) and os.path.isdir(folder))
+            share_btn.setToolTip("Drive linkleri, mesajlar, içerik dengesi ve sosyal medya boyutları")
+            share_btn.clicked.connect(lambda checked=False, p=folder: (self.set_work_folder(p), self._go_to(PAGE_SHARE)))
+            row_layout.addWidget(review_btn)
+            row_layout.addWidget(share_btn)
             row_layout.addWidget(folder_btn)
             row_layout.addWidget(csv_btn)
             self.report_rows_layout.addWidget(row)
@@ -4468,12 +6449,31 @@ class MainWindow(QMainWindow):
                 "toplam": total, "islenen": processed, "basarili": success,
                 "kaleci": stats.get("kaleci", 0), "karisik": stats.get("karisik", 0),
                 "klasor": output_folder, "csv": self._csv_path,
-                "stopped": self._stop_requested,
+                "stopped": self._stop_requested, "per_player": stats.get("per_player", {}),
             })
 
         QApplication.beep()
-        QMessageBox.information(self, "İşlem Tamamlandı" if not self._stop_requested else "İşlem Durduruldu",
-                                f"Çıktı klasörü:\n{output_folder or '-'}")
+        if output_folder and os.path.isdir(output_folder):
+            self.set_work_folder(output_folder)
+        title = "İşlem Tamamlandı" if not self._stop_requested else "İşlem Durduruldu"
+        msg = f"Çıktı klasörü:\n{output_folder or '-'}"
+        if stats.get("secilen"):
+            msg += f"\n\nEn iyi fotoğraflar: {stats['secilen']} kare ({SELECTION_FOLDER_NAME} klasörü)"
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(msg)
+        review_btn = None
+        if stats.get("karisik", 0) > 0 and output_folder:
+            review_btn = box.addButton(f"Karışık {stats['karisik']} fotoğrafı incele", QMessageBox.ButtonRole.AcceptRole)
+        share_btn = box.addButton("Paylaşıma geç", QMessageBox.ButtonRole.ActionRole) if output_folder else None
+        box.addButton("Tamam", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if review_btn is not None and clicked is review_btn:
+            self._go_to(PAGE_REVIEW)
+        elif share_btn is not None and clicked is share_btn:
+            self._go_to(PAGE_SHARE)
 
     def _open_output_folder(self):
         if self._output_folder and os.path.isdir(self._output_folder):
@@ -4502,6 +6502,9 @@ class MainWindow(QMainWindow):
 # ==========================================================================================
 # TEMALAR (her departmanın kendi vurgu rengi var) + ORTAK ARAYÜZ ARAÇLARI
 # ==========================================================================================
+
+ICON_SVG["share"] = ('<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>'
+                    '<path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/>', False)
 
 ICON_SVG.update({
     "cross": ('<path d="M11 2a2 2 0 0 0-2 2v5H4a2 2 0 0 0-2 2v2c0 1.1.9 2 2 2h5v5c0 1.1.9 2 2 2h2a2 2 0 0 0 2-2v-5h5'

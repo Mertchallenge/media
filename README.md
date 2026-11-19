@@ -15,6 +15,15 @@ Kocaelispor Medya Departmanı masaüstü uygulaması (PyQt6).
 
 Üçü de (main.py, admin.py, ks_data.py) **aynı klasörde** olmalı.
 
+## Medya bölümü — günlük akış
+
+1. **Ayıklama:** referans + medya klasörünü seç, başlat. Bitince oyuncu klasörlerinin yanında `SECILENLER` (oyuncu başına en iyi 5 kare) ve `Rapor.csv` oluşur.
+2. **İnceleme:** Eşleşmeyen (KARISIK) ve düşük güvenli fotoğrafları tek tek onayla / düzelt. `Enter` öneriyi onaylar, `1/2/3` aday seçer, `→` atlar, `X` hiçbiri, `Z` geri alır. Onayladığın yüz referansa eklenir (sonraki ayıklamalar daha doğru olur).
+3. **Paylaşım:** Her oyuncunun Drive linkini yapıştır, hazır mesajı kopyala. *İçerik dengesi* sekmesi kimin az / hiç çıkmadığını, hangi oyuncunun tek referanslı olduğunu gösterir. *Sosyal medya* sekmesi seçilen karelerden Story (1080×1920), Gönderi (1080×1350), Kare (1080×1080) üretir, istersen Kocaelispor logosunu ekler (`SOSYAL` klasörü).
+4. **Maçlar → Maç günü listesi:** Her maç için işaretlenebilir kontrol listesi.
+
+Ayarlar `~/.kocaelispor_foto_ayiklama/medya_ayarlar.json` dosyasında tutulur (Drive linkleri, mesaj şablonu, liste işaretleri).
+
 ## Admin Paneli nasıl kullanılır?
 
 Terminalde `python3 admin.py` çalıştır (ya da main.py ile aynı klasörde bir kısayol
