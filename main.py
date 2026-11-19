@@ -2858,7 +2858,7 @@ class MainWindow(QMainWindow):
         self.elapsed_timer.timeout.connect(self._tick_elapsed)
 
         self.clock_timer = QTimer(self)
-        self.clock_timer.setInterval(40)   # salise için ~25 kez/sn
+        self.clock_timer.setInterval(250)  # saniye değişimini gecikmesiz yakalamak için
         self.clock_timer.timeout.connect(self._tick_clock)
 
         self._build_ui()
@@ -3036,10 +3036,10 @@ class MainWindow(QMainWindow):
         self.date_label.setObjectName("pillText")
         dot = QLabel("·")
         dot.setObjectName("pillDot")
-        self.time_label = QLabel("--:--:--.--")
+        self.time_label = QLabel("--:--:--")
         self.time_label.setObjectName("pillTime")
         self.time_label.setStyleSheet(f"font-family: {FONT_MONO};")
-        self.time_label.setMinimumWidth(130)
+        self.time_label.setMinimumWidth(80)
         pill_row.addWidget(self.date_label)
         pill_row.addWidget(dot)
         pill_row.addWidget(self.time_label)
@@ -4227,7 +4227,7 @@ class MainWindow(QMainWindow):
     def _tick_clock(self):
         now = datetime.now()
         self.date_label.setText(f"{DAYS_TR[now.weekday()]}, {now.day} {TURKISH_MONTHS[now.month]} {now.year}")
-        self.time_label.setText(now.strftime("%H:%M:%S") + f".{now.microsecond // 10000:02d}")
+        self.time_label.setText(now.strftime("%H:%M:%S"))
         if now.date() != self._shown_date:  # gün değişti: sayaçları yenile
             self._shown_date = now.date()
             self._refresh_club_cards()
@@ -5738,7 +5738,7 @@ class DeptWindow(UiKit, QMainWindow):
         self.setStyleSheet(themed_stylesheet(self.KEY))
 
         self.clock_timer = QTimer(self)
-        self.clock_timer.setInterval(40)   # salise için ~25 kez/sn
+        self.clock_timer.setInterval(250)  # saniye değişimini gecikmesiz yakalamak için
         self.clock_timer.timeout.connect(self._tick_clock)
         self.clock_timer.start()
         self._tick_clock()
@@ -5854,10 +5854,10 @@ class DeptWindow(UiKit, QMainWindow):
         self.date_label.setObjectName("pillText")
         dot = QLabel("·")
         dot.setObjectName("pillDot")
-        self.time_label = QLabel("--:--:--.--")
+        self.time_label = QLabel("--:--:--")
         self.time_label.setObjectName("pillTime")
         self.time_label.setStyleSheet(f"font-family: {FONT_MONO};")
-        self.time_label.setMinimumWidth(130)
+        self.time_label.setMinimumWidth(80)
         pill_row.addWidget(self.date_label)
         pill_row.addWidget(dot)
         pill_row.addWidget(self.time_label)
@@ -5902,7 +5902,7 @@ class DeptWindow(UiKit, QMainWindow):
     def _tick_clock(self):
         now = datetime.now()
         self.date_label.setText(f"{DAYS_TR[now.weekday()]}, {now.day} {TURKISH_MONTHS[now.month]} {now.year}")
-        self.time_label.setText(now.strftime("%H:%M:%S") + f".{now.microsecond // 10000:02d}")
+        self.time_label.setText(now.strftime("%H:%M:%S"))
 
     def _confirm(self, text: str, title: str = "Onay") -> bool:
         answer = QMessageBox.question(self, title, text,
@@ -8495,7 +8495,7 @@ class LauncherWindow(UiKit, QMainWindow):
         self._build()
         self.setStyleSheet(themed_stylesheet("medya"))
         self.clock_timer = QTimer(self)
-        self.clock_timer.setInterval(40)   # salise için ~25 kez/sn
+        self.clock_timer.setInterval(250)  # saniye değişimini gecikmesiz yakalamak için
         self.clock_timer.timeout.connect(self._tick_clock)
         self.clock_timer.start()
         self._tick_clock()
@@ -8532,10 +8532,10 @@ class LauncherWindow(UiKit, QMainWindow):
         self.date_label.setObjectName("pillText")
         dot = QLabel("·")
         dot.setObjectName("pillDot")
-        self.time_label = QLabel("--:--:--.--")
+        self.time_label = QLabel("--:--:--")
         self.time_label.setObjectName("pillTime")
         self.time_label.setStyleSheet(f"font-family: {FONT_MONO};")
-        self.time_label.setMinimumWidth(130)
+        self.time_label.setMinimumWidth(80)
         pl.addWidget(self.date_label)
         pl.addWidget(dot)
         pl.addWidget(self.time_label)
@@ -8684,7 +8684,7 @@ class LauncherWindow(UiKit, QMainWindow):
     def _tick_clock(self):
         now = datetime.now()
         self.date_label.setText(f"{DAYS_TR[now.weekday()]}, {now.day} {TURKISH_MONTHS[now.month]} {now.year}")
-        self.time_label.setText(now.strftime("%H:%M:%S") + f".{now.microsecond // 10000:02d}")
+        self.time_label.setText(now.strftime("%H:%M:%S"))
 
 
 class AppController(QObject):
