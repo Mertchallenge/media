@@ -540,6 +540,29 @@ def programs_to_ics(programs: list, today: "date | None" = None) -> str:
     return "\r\n".join(_ics_fold(l) for l in lines) + "\r\n"
 
 
+def fixture_to_ics(home: str, away: str, d: "date", time_text: str = "", stadium: str = "") -> str:
+    """Tek bir maçı iCalendar metnine çevirir (UID sabit: tekrar içe aktarınca çoğalmaz). Saat yoksa tüm gün olur."""
+    stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    title = f"{home} - {away}"
+    uid = hashlib.sha1(f"mac|{d.isoformat()}|{title}".encode("utf-8")).hexdigest()[:20] + "@mediastaffks"
+    ev = ["BEGIN:VEVENT", f"UID:{uid}", f"DTSTAMP:{stamp}"]
+    if time_text and re.match(r"^\d{2}:\d{2}$", time_text):
+        start = datetime.combine(d, datetime.strptime(time_text, "%H:%M").time())
+        end = start + timedelta(minutes=120)
+        ev += [f"DTSTART:{start.strftime('%Y%m%dT%H%M%S')}", f"DTEND:{end.strftime('%Y%m%dT%H%M%S')}"]
+    else:
+        ev += [f"DTSTART;VALUE=DATE:{d.strftime('%Y%m%d')}", f"DTEND;VALUE=DATE:{(d + timedelta(days=1)).strftime('%Y%m%d')}"]
+    ev.append("SUMMARY:" + _ics_escape(title))
+    if stadium:
+        ev.append("LOCATION:" + _ics_escape(stadium))
+    if time_text:
+        ev += ["BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:" + _ics_escape(title), "TRIGGER:-PT3H", "END:VALARM"]
+    ev.append("END:VEVENT")
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//MediaStaffKS//Mac//TR", "CALSCALE:GREGORIAN",
+             "METHOD:PUBLISH"] + ev + ["END:VCALENDAR"]
+    return "\r\n".join(_ics_fold(l) for l in lines) + "\r\n"
+
+
 # ---------------------------------------------------------------------------
 # iPhone widget'ları (Scriptable) — iCloud Drive üzerinden eşitleme
 # ---------------------------------------------------------------------------

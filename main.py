@@ -132,7 +132,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QTextEdit, QFileDialog, QFrame, QMessageBox, QDialog,
     QSlider, QScrollArea, QAbstractButton, QSizePolicy, QToolButton, QButtonGroup,
     QStackedWidget, QLineEdit, QComboBox, QDateEdit, QTimeEdit, QSpinBox, QSystemTrayIcon, QMenu,
-    QDoubleSpinBox, QCheckBox, QPlainTextEdit, QProgressBar
+    QDoubleSpinBox, QCheckBox, QPlainTextEdit, QProgressBar, QCompleter
 )
 try:  # İsteğe bağlı (Instagram önizlemesi): pip install PyQt6-WebEngine — QApplication'dan ÖNCE içe aktarılmalı
     from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.5.5"
+APP_VERSION = "1.6.0"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Daha sağlam: beklenmeyen hatada uygulama çökmez, veriler güvenli yazılır, her gün otomatik yedek alınır (Ayarlar → Yedekler klasörü)."
+UPDATE_NOTES = "Daha profesyonel: Maçlar (duyuru metni, Takvim'e ekle, o günün programı), Doğum günleri (ay başlıkları, mesajı kopyala), Basın (otomatik kayıt, isim tamamlama, sırası gelenler), düğme stilleri."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -2137,10 +2137,14 @@ QPushButton#outlineSmall {{
     background-color: transparent;
     color: #B9C8BF;
     border: 1px solid {K_LINE2};
-    border-radius: 9px;
+    border-radius: 10px;
     padding: 0px 14px;
+    min-height: 30px;
     font-size: 12px;
+    font-weight: 600;
 }}
+QPushButton#outlineSmall:hover {{ color: {K_TEXT}; border: 1px solid {K_GREEN}; }}
+QPushButton#outlineSmall:disabled {{ color: {K_DIM}; border: 1px solid {K_LINE}; }}
 QPushButton#linkBtn {{
     background-color: transparent;
     color: {K_MUTED};
@@ -5409,6 +5413,27 @@ def press_stats() -> list:
     return result
 
 
+def press_suggestions(limit: int = 6) -> list:
+    """Röportaja sırası gelenler: kadrodan en az çıkan (hiç çıkmayan) oyuncular. [(isim, toplam), ...]"""
+    counts = {st["name"]: st["total"] for st in press_stats()}
+    names = sorted((p["name"] for p in ROSTER), key=lambda n: (counts.get(n, 0), n))
+    return [(n, counts.get(n, 0)) for n in names[:limit]]
+
+
+class MultiNameCompleter(QCompleter):
+    """' - ' ile ayrılmış birden çok isim yazılan kutularda, yalnızca son yazılan kısmı tamamlar."""
+    SEP = " - "
+
+    def splitPath(self, path):
+        return [path.split(self.SEP)[-1].strip()]
+
+    def pathFromIndex(self, index):
+        base = super().pathFromIndex(index)
+        w = self.widget()
+        parts = (w.text() if w is not None else "").split(self.SEP)
+        return self.SEP.join(parts[:-1] + [base]) if len(parts) > 1 else base
+
+
 STATUSES = ["Hazır", "Kısıtlı", "Sakat", "Rehab"]
 STATUS_COLORS = {  # durum: (yazı, zemin)
     "Hazır": ("#2FD69A", "#12291F"),
@@ -6927,6 +6952,8 @@ class MainWindow(QMainWindow):
 
         self.match_hero_card, self.match_hero_layout = self._card(margins=(24, 22, 24, 22), spacing=18)
         detail.addWidget(self.match_hero_card)
+        self.match_prog_card, self.match_prog_layout = self._card(margins=(24, 20, 24, 20), spacing=10)
+        detail.addWidget(self.match_prog_card)
         detail.addStretch(1)
 
         row.addWidget(self._scroll(detail_inner), 1)
@@ -7005,6 +7032,8 @@ class MainWindow(QMainWindow):
             empty = QLabel("Gösterilecek maç yok.")
             empty.setObjectName("emptyHint")
             self.match_hero_layout.addWidget(empty)
+            clear_layout(self.match_prog_layout)
+            self.match_prog_card.setVisible(False)
             return
 
         d = fx["date"]
@@ -7057,14 +7086,103 @@ class MainWindow(QMainWindow):
         self.match_hero_layout.addLayout(info)
 
         md_row = QHBoxLayout()
+        md_row.setSpacing(10)
         md_btn = QPushButton(f"Maç günü listesi  ·  {MatchdayDialog.progress_text(fixture_key(fx))}")
         md_btn.setObjectName("outlineSmall")
         md_btn.setFixedHeight(34)
         md_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         md_btn.clicked.connect(lambda checked=False, fx=fx: self._open_matchday(fx))
         md_row.addWidget(md_btn)
+        copy_btn = QPushButton("Duyuru metnini kopyala")
+        copy_btn.setObjectName("outlineSmall")
+        copy_btn.setFixedHeight(34)
+        copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        copy_btn.clicked.connect(lambda checked=False, fx=fx, b=copy_btn: self._copy_match_text(fx, b))
+        md_row.addWidget(copy_btn)
+        ics_btn = QPushButton("Takvim'e ekle")
+        ics_btn.setObjectName("outlineSmall")
+        ics_btn.setFixedHeight(34)
+        ics_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        ics_btn.clicked.connect(lambda checked=False, fx=fx: self._export_match_ics(fx))
+        md_row.addWidget(ics_btn)
         md_row.addStretch(1)
         self.match_hero_layout.addLayout(md_row)
+        self._refresh_match_program(fx)
+
+    def _match_announce_text(self, fx: dict) -> str:
+        d = fx["date"]
+        home_name = KULUP_ADI if fx["home"] else fx["opponent"]
+        away_name = fx["opponent"] if fx["home"] else KULUP_ADI
+        lines = ["MAÇ GÜNÜ", "", f"{home_name} - {away_name}",
+                 f"📅 {d.day} {TURKISH_MONTHS[d.month]} {d.year} {DAYS_TR[d.weekday()]}"]
+        if fx.get("time"):
+            lines.append(f"⏰ {fx['time']}")
+        if fx.get("stadium"):
+            lines.append(f"📍 {fx['stadium']}")
+        lines += ["", "#Kocaelispor"]
+        return "\n".join(lines)
+
+    def _copy_match_text(self, fx: dict, btn: QPushButton):
+        QApplication.clipboard().setText(self._match_announce_text(fx))
+        try:
+            btn.setText("Kopyalandı ✓")
+            QTimer.singleShot(1600, lambda: btn.setText("Duyuru metnini kopyala"))
+        except RuntimeError:
+            pass
+
+    def _export_match_ics(self, fx: dict):
+        home_name = KULUP_ADI if fx["home"] else fx["opponent"]
+        away_name = fx["opponent"] if fx["home"] else KULUP_ADI
+        text = ks_data.fixture_to_ics(home_name, away_name, fx["date"], fx.get("time") or "", fx.get("stadium") or "")
+        path = os.path.join(str(ks_data.user_data_dir()), f"MediaStaffKS-Mac-{fx['date'].isoformat()}.ics")
+        try:
+            with open(path, "w", encoding="utf-8", newline="") as fh:
+                fh.write(text)
+        except OSError as e:
+            QMessageBox.warning(self, "Takvim", f"Dosya yazılamadı:\n{e}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _refresh_match_program(self, fx: dict):
+        """Maç detayının altında: o günün (maç günü) programı."""
+        clear_layout(self.match_prog_layout)
+        items, subtitle = program_items_on(fx["date"])
+        self.match_prog_card.setVisible(True)
+        head = QHBoxLayout()
+        head.addWidget(self._section_label(f"{fx['date'].day} {TURKISH_MONTHS[fx['date'].month]} günü programı"))
+        head.addStretch(1)
+        if subtitle:
+            sub = QLabel(subtitle)
+            sub.setObjectName("dateSub")
+            head.addWidget(sub)
+        go = QPushButton("Haftalık program ›")
+        go.setObjectName("linkBtn")
+        go.setCursor(Qt.CursorShape.PointingHandCursor)
+        go.clicked.connect(self._show_program_page)
+        head.addWidget(go)
+        self.match_prog_layout.addLayout(head)
+        if not items:
+            hint = QLabel("Bu gün için program eklenmedi.")
+            hint.setObjectName("emptyHint")
+            self.match_prog_layout.addWidget(hint)
+            return
+        for it in items:
+            fg, bg, bd = self.PROGRAM_KIND_STYLE.get(it.get("kind", "meal"), self.PROGRAM_KIND_STYLE["meal"])
+            row = QFrame()
+            row.setObjectName("progRow")
+            row.setStyleSheet(f"QFrame#progRow {{ background: {bg}; border: 1px solid {bd}; border-radius: 10px; }}")
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(12, 7, 12, 7)
+            rl.setSpacing(12)
+            t = QLabel(it.get("time") or "Gün boyu")
+            t.setFixedWidth(56)
+            t.setStyleSheet(f"color: {fg}; font-weight: 700; background: transparent; border: none;")
+            n = QLabel(it.get("title", ""))
+            n.setWordWrap(True)
+            n.setStyleSheet(f"color: {K_TEXT}; background: transparent; border: none;")
+            rl.addWidget(t)
+            rl.addWidget(n, 1)
+            self.match_prog_layout.addWidget(row)
 
     def _open_matchday(self, fx: dict):
         dlg = MatchdayDialog(fx, self._go_to, self)
@@ -7117,10 +7235,21 @@ class MainWindow(QMainWindow):
             empty.setObjectName("emptyHint")
             self.bd_rows_layout.addWidget(empty)
         today = date.today()
+        soon = sum(1 for b in birthdays if b["days_left"] <= 7)
+        if soon:
+            self.bd_count_label.setText(turkish_upper(f"Kadro · {len(birthdays)} oyuncu · Bu hafta {soon} doğum günü"))
+        last_month = None
         for b in birthdays:
             dob = b["date"]
             next_bday = today + timedelta(days=b["days_left"])
             turning = next_bday.year - dob.year
+            month_key = (next_bday.year, next_bday.month)
+            if month_key != last_month:                      # ay başlıkları: listeyi taramayı kolaylaştırır
+                last_month = month_key
+                if self.bd_rows_layout.count():
+                    self.bd_rows_layout.addSpacing(10)
+                self.bd_rows_layout.addWidget(self._section_label(f"{TURKISH_MONTHS[next_bday.month]} {next_bday.year}"))
+                self.bd_rows_layout.addSpacing(4)
 
             row = QFrame()
             row.setObjectName("rowLine")
@@ -7149,8 +7278,25 @@ class MainWindow(QMainWindow):
             else:
                 chip = make_chip(f"{b['days_left']} gün", K_MUTED, "#1B2A22")
             row_layout.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
+            msg_btn = QPushButton("Mesajı kopyala")
+            msg_btn.setObjectName("linkBtn")
+            msg_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            msg_btn.setToolTip("Doğum günü paylaşım metnini panoya kopyalar")
+            msg_btn.clicked.connect(lambda checked=False, n=b["name"], t=turning, btn=msg_btn: self._copy_birthday_text(n, t, btn))
+            row_layout.addWidget(msg_btn, 0, Qt.AlignmentFlag.AlignVCenter)
             self.bd_rows_layout.addWidget(row)
         self.bd_rows_layout.addStretch(1)
+
+    def _copy_birthday_text(self, full_name: str, turning: int, btn: QPushButton):
+        first = (full_name.split() or [full_name])[0]
+        text = (f"Doğum günün kutlu olsun {first}! 🎂\n"
+                f"{turning}. yaşında sağlık, mutluluk ve başarı dolu bir yıl dileriz. 💚🖤\n\n#Kocaelispor")
+        QApplication.clipboard().setText(text)
+        try:
+            btn.setText("Kopyalandı ✓")
+            QTimer.singleShot(1600, lambda: btn.setText("Mesajı kopyala"))
+        except RuntimeError:
+            pass
 
     # ==================================================================
     # HAFTALIK PROGRAM (kulübün antrenman / yemek / kamp / maç günü programı)
@@ -7432,6 +7578,13 @@ class MainWindow(QMainWindow):
         stats_hint.setObjectName("noteText")
         stats_hint.setWordWrap(True)
         s_layout.addWidget(stats_hint)
+        s_layout.addWidget(self._section_label("Sırası gelenler (en az çıkanlar)"))
+        self.press_suggest_layout = QHBoxLayout()
+        self.press_suggest_layout.setSpacing(8)
+        s_layout.addLayout(self.press_suggest_layout)
+        sug_hint = QLabel("Bir isme tıkla: en son tıkladığın Beinsports / Antrenman kutusuna eklenir.")
+        sug_hint.setObjectName("noteText")
+        s_layout.addWidget(sug_hint)
         self.press_stats_layout = QVBoxLayout()
         self.press_stats_layout.setSpacing(0)
         s_layout.addLayout(self.press_stats_layout)
@@ -7453,12 +7606,12 @@ class MainWindow(QMainWindow):
         save_btn.setObjectName("aiBtn")
         save_btn.setFixedHeight(32)
         save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        save_btn.clicked.connect(self._save_press_page)
+        save_btn.clicked.connect(lambda checked=False: self._save_press_page())
         head.addWidget(save_btn)
         c_layout.addLayout(head)
 
-        note = QLabel("Her kart bir hafta/maç dönemi. İsimleri birden fazlaysa \" - \" ile ayır. "
-                      "Bitince \"Kaydet\"e basmayı unutma.")
+        note = QLabel("Her kart bir hafta/maç dönemi. İsim yazarken öneriler çıkar; birden fazla isim \" - \" ile ayrılır. "
+                      "Değişiklikler otomatik kaydedilir.")
         note.setObjectName("noteText")
         note.setWordWrap(True)
         c_layout.addWidget(note)
@@ -7476,11 +7629,55 @@ class MainWindow(QMainWindow):
 
         outer_layout.addWidget(self._scroll(inner), 1)
         self._press_row_widgets = []
+        self._press_focus_edit = None
+        self._press_save_timer = QTimer(self)
+        self._press_save_timer.setSingleShot(True)
+        self._press_save_timer.setInterval(700)
+        self._press_save_timer.timeout.connect(lambda: self._save_press_page(auto=True))
+        QApplication.instance().focusChanged.connect(self._press_focus_changed)
         return page
+
+    def _press_autosave_later(self, *_):
+        self._press_save_timer.start()
+
+    def _press_focus_changed(self, old, new):
+        for entry in getattr(self, "_press_row_widgets", []):
+            if new is entry["bein"] or new is entry["ant"]:
+                self._press_focus_edit = new
+                return
+
+    def _press_insert_name(self, name: str):
+        edit = self._press_focus_edit
+        try:
+            cur = edit.text().strip() if edit is not None else None
+        except RuntimeError:       # satır silinmiş
+            edit, cur = None, None
+        if edit is None:
+            QApplication.clipboard().setText(name)
+            self.press_status.setText(f"Panoya kopyalandı: {name}. Önce bir Beinsports / Antrenman kutusuna tıklarsan oraya eklenir.")
+            return
+        if name.lower() in cur.lower():
+            self.press_status.setText(f"{name} zaten yazılı.")
+            return
+        edit.setText(f"{cur} - {name}" if cur else name)
+        edit.setFocus()
+        self._press_autosave_later()
+
+    def _refresh_press_suggestions(self):
+        clear_layout(self.press_suggest_layout)
+        for name, total in press_suggestions(6):
+            b = QPushButton(f"{name}  ·  {total}×")
+            b.setObjectName("outlineSmall")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip("Eklemek için tıkla")
+            b.clicked.connect(lambda checked=False, n=name: self._press_insert_name(n))
+            self.press_suggest_layout.addWidget(b)
+        self.press_suggest_layout.addStretch(1)
 
     def _refresh_press_page(self):
         clear_layout(self.press_rows_layout)
         self._press_row_widgets = []
+        self._press_focus_edit = None
         self.press_status.setText("")
         weeks = PRESS_WEEKS
         self.press_count_label.setText(turkish_upper(f"Röportaj Takvimi · {len(weeks)} hafta"))
@@ -7492,6 +7689,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_press_stats(self):
         clear_layout(self.press_stats_layout)
+        self._refresh_press_suggestions()
         stats = press_stats()
         if not stats:
             empty = QLabel("Henüz istatistik yok — bir hafta kartına isim yazıp kaydet.")
@@ -7558,6 +7756,14 @@ class MainWindow(QMainWindow):
         v.addLayout(cols)
 
         entry = {"frame": row, "hafta": hafta_edit, "bein": bein_edit, "ant": ant_edit}
+        for ed in (bein_edit, ant_edit):
+            comp = MultiNameCompleter([p["name"] for p in ROSTER], ed)
+            comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            comp.setFilterMode(Qt.MatchFlag.MatchContains)
+            comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+            ed.setCompleter(comp)
+        for ed in (hafta_edit, bein_edit, ant_edit):
+            ed.textEdited.connect(self._press_autosave_later)
         del_btn.clicked.connect(lambda checked=False, e=entry: self._remove_press_row(e))
         self._press_row_widgets.append(entry)
         self.press_rows_layout.addWidget(row)
@@ -7567,23 +7773,25 @@ class MainWindow(QMainWindow):
         entry["frame"].deleteLater()
         if entry in self._press_row_widgets:
             self._press_row_widgets.remove(entry)
+        if self._press_focus_edit in (entry["bein"], entry["ant"]):
+            self._press_focus_edit = None
+        self._press_autosave_later()
 
-    def _save_press_page(self):
+    def _save_press_page(self, auto: bool = False):
         global PRESS_WEEKS
         weeks = []
         for entry in self._press_row_widgets:
             hafta = entry["hafta"].text().strip()
-            if not hafta:
-                continue
-            weeks.append({
-                "hafta": hafta,
-                "beinsports": entry["bein"].text().strip(),
-                "antrenman": entry["ant"].text().strip(),
-            })
+            bein = entry["bein"].text().strip()
+            ant = entry["ant"].text().strip()
+            if not hafta and not (bein or ant):
+                continue                      # tamamen boş kart
+            weeks.append({"hafta": hafta or "(Adsız hafta)", "beinsports": bein, "antrenman": ant})
         ks_data.save_press(weeks)
         PRESS_WEEKS = weeks
         self.press_count_label.setText(turkish_upper(f"Röportaj Takvimi · {len(weeks)} hafta"))
-        self.press_status.setText(f"Kaydedildi — {len(weeks)} hafta.")
+        stamp = datetime.now().strftime("%H:%M")
+        self.press_status.setText(f"Otomatik kaydedildi · {stamp}" if auto else f"Kaydedildi · {stamp} — {len(weeks)} hafta.")
         self._refresh_press_stats()
 
     # SAYFA 4 — RAPORLAR (geçmiş işlemler)
