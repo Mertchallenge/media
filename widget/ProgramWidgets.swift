@@ -9,6 +9,7 @@ struct ProgramEntry: TimelineEntry {
     let date: Date
     let day: XDay?
     let hasData: Bool
+    var tomorrow: Bool = false      // günün son etkinliğinden 30 dk sonra yarının programı gösterilir
 }
 
 func programDay(_ x: XData?, _ date: Date) -> XDay? {
@@ -16,26 +17,51 @@ func programDay(_ x: XData?, _ date: Date) -> XDay? {
     return x?.program.first { $0.date == iso }
 }
 
+/// Günün son saatli etkinliğinden 30 dk sonrası; saatli satır yoksa nil.
+func programRollover(_ day: XDay?, _ ref: Date) -> Date? {
+    guard let day = day else { return nil }
+    let stamps = day.items.compactMap { $0.time.isEmpty ? nil : timeToday($0.time, ref) }
+    return stamps.max().map { $0.addingTimeInterval(30 * 60) }
+}
+
+/// `at` anında gösterilecek gün: bugün; son etkinlikten 30 dk sonra (ve yarın programı varsa) yarın.
+func effectiveProgram(_ x: XData?, _ at: Date) -> (day: XDay?, tomorrow: Bool) {
+    let today = programDay(x, at)
+    if let r = programRollover(today, at), at >= r,
+       let next = Calendar.current.date(byAdding: .day, value: 1, to: at),
+       let tm = programDay(x, next), !tm.items.isEmpty {
+        return (tm, true)
+    }
+    return (today, false)
+}
+
+func programEntry(_ x: XData?, _ at: Date) -> ProgramEntry {
+    let e = effectiveProgram(x, at)
+    return ProgramEntry(date: at, day: e.day, hasData: x != nil, tomorrow: e.tomorrow)
+}
+
 struct ProgramTodayProvider: TimelineProvider {
     func placeholder(in context: Context) -> ProgramEntry { ProgramEntry(date: Date(), day: nil, hasData: false) }
 
     func getSnapshot(in context: Context, completion: @escaping (ProgramEntry) -> Void) {
-        let x = Store.read("extra.json", as: XData.self)
-        completion(ProgramEntry(date: Date(), day: programDay(x, Date()), hasData: x != nil))
+        completion(programEntry(Store.read("extra.json", as: XData.self), Date()))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<ProgramEntry>) -> Void) {
         let x = Store.read("extra.json", as: XData.self)
         let now = Date()
-        let day = programDay(x, now)
-        var entries = [ProgramEntry(date: now, day: day, hasData: x != nil)]
-        if let day = day {
-            for item in day.items {
-                if let t = timeToday(item.time, now), t > now {
-                    entries.append(ProgramEntry(date: t, day: day, hasData: true))   // sıradaki satır tam saatinde güncellenir
-                }
-            }
-        }
+        let cal = Calendar.current
+        var moments: [Date] = []
+        let tomorrowDate = cal.date(byAdding: .day, value: 1, to: now) ?? now
+        // bugünün satır saatleri, geçiş anı, gece yarısı ve yarının satır saatleri
+        let today = programDay(x, now)
+        for it in today?.items ?? [] { if let t = timeToday(it.time, now) { moments.append(t) } }
+        if let r = programRollover(today, now) { moments.append(r) }
+        let midnight = cal.startOfDay(for: tomorrowDate)
+        moments.append(midnight)
+        for it in programDay(x, tomorrowDate)?.items ?? [] { if let t = timeToday(it.time, tomorrowDate) { moments.append(t) } }
+        var entries = [programEntry(x, now)]
+        for t in Set(moments).sorted() where t > now { entries.append(programEntry(x, t)) }
         completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(30 * 60))))
     }
 }
@@ -73,7 +99,8 @@ struct ProgramTodayView: View {
     }
 
     var items: [XItem] { entry.day?.items ?? [] }
-    var nowStr: String { hhmm(entry.date) }
+    var nowStr: String { entry.tomorrow ? "00:00" : hhmm(entry.date) }   // yarın gösteriliyorsa hepsi "gelecek"
+    var heading: String { entry.tomorrow ? "YARININ PROGRAMI" : "BUGÜNÜN PROGRAMI" }
     var nextIdx: Int? { items.firstIndex { !$0.time.isEmpty && $0.time >= nowStr } }
 
     func isDone(_ i: Int) -> Bool {
@@ -97,7 +124,7 @@ struct ProgramTodayView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                SectionTitle(text: "BUGÜNÜN PROGRAMI")
+                SectionTitle(text: heading)
                 Spacer()
                 Text(entry.hasData ? "Bugün için program eklenmedi." : "MediaStaffKS uygulamasını bir kez aç.")
                     .font(.system(size: 12)).foregroundColor(kMuted)
@@ -109,7 +136,7 @@ struct ProgramTodayView: View {
     func list(_ day: XDay, cap: Int) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
-                SectionTitle(text: "BUGÜNÜN PROGRAMI")
+                SectionTitle(text: heading)
                 Spacer()
                 Text(day.subtitle).font(.system(size: 11, weight: .semibold)).foregroundColor(kText).lineLimit(1)
             }
@@ -122,7 +149,7 @@ struct ProgramTodayView: View {
 
     func small(_ day: XDay) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            SectionTitle(text: nextIdx == nil ? "BUGÜN" : "SIRADAKİ")
+            SectionTitle(text: entry.tomorrow ? "YARIN" : (nextIdx == nil ? "BUGÜN" : "SIRADAKİ"))
             if let i = nextIdx ?? items.indices.last {
                 let it = items[i]
                 let st = kindStyle(it.kind)

@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Paylaşım kaydı/değişikliği Mac widget'larına hemen yansır (widget'ı yeniden kurmak gerekir: build_widget.sh)."
+UPDATE_NOTES = "Günün son etkinliğinden 30 dk sonra program yarını gösterir (ana sayfa, mini pencere, menü çubuğu, widget'lar)."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -5379,18 +5379,47 @@ def player_label(pid: str) -> str:
 PROGRAM_MINI_STATE = os.path.join(APP_DIR, "mini_program.json")
 
 
-def program_today_items() -> tuple:
-    """(bugünün program satırları saate göre sıralı, program alt başlığı)"""
-    today_iso = date.today().isoformat()
+PROGRAM_ROLLOVER_MIN = 30   # günün son etkinliğinden bu kadar dk sonra program ertesi günü gösterir
+
+
+def program_items_on(d) -> tuple:
+    """(verilen günün program satırları saate göre sıralı, program alt başlığı)"""
+    iso = d.isoformat()
     for pr in PROGRAMS:
-        todays = [i for i in pr["items"] if i["date"] == today_iso]
-        if todays:
-            return sorted(todays, key=lambda i: i.get("time") or "99:99"), pr.get("subtitle", "")
+        found = [i for i in pr["items"] if i["date"] == iso]
+        if found:
+            return sorted(found, key=lambda i: i.get("time") or "99:99"), pr.get("subtitle", "")
     return [], ""
 
 
+def program_view_date(now=None):
+    """Gösterilecek gün: bugün; ama bugünün son saatli etkinliğinden 30 dk sonra (ve yarının programı varsa) yarın."""
+    now = now or datetime.now()
+    today = now.date()
+    items, _ = program_items_on(today)
+    stamps = []
+    for it in items:
+        try:
+            h, m = (int(x) for x in str(it.get("time") or "").split(":"))
+            stamps.append(datetime.combine(today, datetime.min.time()).replace(hour=h, minute=m))
+        except (ValueError, TypeError):
+            continue
+    if stamps and now >= max(stamps) + timedelta(minutes=PROGRAM_ROLLOVER_MIN):
+        tomorrow = today + timedelta(days=1)
+        if program_items_on(tomorrow)[0]:
+            return tomorrow
+    return today
+
+
+def program_today_items() -> tuple:
+    """(gösterilecek günün satırları, alt başlık) — gün bittiyse yarının programı"""
+    return program_items_on(program_view_date())
+
+
 def program_next_index(items: list) -> int:
-    """Şimdiden sonraki (ya da şu an başlayan) ilk satırın sırası; hepsi geçtiyse -1."""
+    """Şimdiden sonraki (ya da şu an başlayan) ilk satırın sırası; hepsi geçtiyse -1. Yarın gösteriliyorsa 0."""
+    if program_view_date() != date.today():
+        return 0 if items else -1
     now = datetime.now().strftime("%H:%M")
     for idx, it in enumerate(items):
         if it.get("time") and it["time"] >= now:
@@ -5431,8 +5460,9 @@ class ProgramMiniWindow(QWidget):
         items, subtitle = program_today_items()
         nxt = program_next_index(items)
         head = QHBoxLayout()
-        d = date.today()
-        title = QLabel(f"{DAYS_TR[d.weekday()][:3]} {d.day} {TURKISH_MONTHS[d.month]}")
+        d = program_view_date()
+        tomorrow = d != date.today()
+        title = QLabel(f"{'Yarın · ' if tomorrow else ''}{DAYS_TR[d.weekday()][:3]} {d.day} {TURKISH_MONTHS[d.month]}")
         title.setStyleSheet(f"color: {K_GREEN_HI}; font-weight: 700; background: transparent; border: none;")
         head.addWidget(title)
         if subtitle:
@@ -7106,13 +7136,22 @@ class MainWindow(QMainWindow):
         self._update_tray_tooltip()
 
     def _update_tray_tooltip(self):
+        try:   # gün değişimi / "son etkinlikten 30 dk sonra yarın" geçişinde ana sayfa kartını tazele
+            vd = program_view_date()
+            if getattr(self, "_prog_view_seen", vd) != vd:
+                self._refresh_today_program()
+                self._write_widget_extra()
+            self._prog_view_seen = vd
+        except Exception:  # noqa: BLE001
+            pass
         if self.prog_tray is None:
             return
         items, _ = program_today_items()
         nxt = program_next_index(items)
         if nxt != -1:
             it = items[nxt]
-            self.prog_tray.setToolTip(f"Sıradaki: {it.get('time') or ''} {it.get('title', '')}".strip())
+            pre = "Yarın" if program_view_date() != date.today() else "Sıradaki"
+            self.prog_tray.setToolTip(f"{pre}: {it.get('time') or ''} {it.get('title', '')}".strip())
         else:
             self.prog_tray.setToolTip("MediaStaffKS · Bugün için başka program yok")
 
@@ -7121,7 +7160,7 @@ class MainWindow(QMainWindow):
         menu.clear()
         items, subtitle = program_today_items()
         nxt = program_next_index(items)
-        head = menu.addAction(f"Bugünün programı{' · ' + subtitle if subtitle else ''}")
+        head = menu.addAction(f"{'Yarının' if program_view_date() != date.today() else 'Bugünün'} programı{' · ' + subtitle if subtitle else ''}")
         head.setEnabled(False)
         if not items:
             menu.addAction("Bugün için program yok").setEnabled(False)
@@ -7163,13 +7202,10 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "today_prog_rows"):
             return
         clear_layout(self.today_prog_rows)
-        today_iso = date.today().isoformat()
-        items, subtitle = [], ""
-        for pr in PROGRAMS:
-            todays = [i for i in pr["items"] if i["date"] == today_iso]
-            if todays:
-                items, subtitle = sorted(todays, key=lambda i: i.get("time") or "99:99"), pr.get("subtitle", "")
-                break
+        items, subtitle = program_today_items()
+        tomorrow = program_view_date() != date.today()
+        self.today_prog_label.setText(turkish_upper("Yarının programı" if tomorrow else "Bugünün programı"))
+        self._prog_view_seen = program_view_date()
         self.today_prog_sub.setText(subtitle)
         self.today_prog_sub.setVisible(bool(subtitle))
         if not items:

@@ -87,17 +87,35 @@ function avatar(parent, b64, fallback, size) {
 }
 
 // ---------------------------------------------------------------- Bugünün programı
+// Günün son saatli etkinliğinden 30 dk sonra yarının programı gösterilir.
+function viewDay(x, now) {
+  const days = x.program || [];
+  const today = days.find(d => d.date === isoOf(now));
+  if (today) {
+    const stamps = today.items.filter(i => i.time).map(i => {
+      const [h, m] = i.time.split(":").map(Number);
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m);
+    }).filter(d => !isNaN(d));
+    if (stamps.length && now >= new Date(Math.max(...stamps) + 30 * 60 * 1000)) {
+      const tm = days.find(d => d.date === isoOf(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)));
+      if (tm && tm.items.length) return { day: tm, tomorrow: true };
+    }
+  }
+  return { day: today, tomorrow: false };
+}
+
 function programWidget(x, family) {
   const w = newWidget(family);
   const now = new Date();
-  const day = (x.program || []).find(d => d.date === isoOf(now));
-  if (!day || !day.items.length) { message(w, "BUGÜNÜN PROGRAMI", "Bugün için program yok."); return w; }
-  const items = day.items, nowStr = hhmm(now);
+  const { day, tomorrow } = viewDay(x, now);
+  const head = tomorrow ? "YARININ PROGRAMI" : "BUGÜNÜN PROGRAMI";
+  if (!day || !day.items.length) { message(w, head, "Bugün için program yok."); return w; }
+  const items = day.items, nowStr = tomorrow ? "00:00" : hhmm(now);
   const nextIdx = items.findIndex(i => i.time && i.time >= nowStr);
   const done = i => items[i].time && items[i].time < nowStr;
 
   if (family === "small") {
-    title(w, nextIdx < 0 ? "BUGÜN" : "SIRADAKİ");
+    title(w, tomorrow ? "YARIN" : (nextIdx < 0 ? "BUGÜN" : "SIRADAKİ"));
     const i = nextIdx >= 0 ? nextIdx : items.length - 1;
     const st = kindStyle(items[i].kind);
     w.addSpacer(4);
@@ -109,7 +127,7 @@ function programWidget(x, family) {
     return w;
   }
   const cap = family === "large" ? 9 : 4;
-  title(w, "BUGÜNÜN PROGRAMI", day.subtitle);
+  title(w, head, day.subtitle);
   w.addSpacer(6);
   const start = Math.max(0, Math.min(nextIdx < 0 ? items.length : nextIdx, items.length - cap));
   for (let i = start; i < Math.min(items.length, start + cap); i++) {
