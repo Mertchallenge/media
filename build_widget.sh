@@ -1,5 +1,5 @@
 #!/bin/bash
-# MediaStaffKS — macOS widget'ı ("Paylaşım takibi") oluşturucu.
+# MediaStaffKS — macOS widget'ları (Paylaşım takibi, Bugünün/Haftalık program, Sıradaki maç, Doğum günleri) oluşturucu.
 #
 # Kullanım (terminalde, proje klasöründe):   bash build_widget.sh
 #
@@ -14,7 +14,7 @@ die() { printf '\n\033[1;31mHATA: %s\033[0m\n' "$*" >&2; exit 1; }
 
 [ "$(uname -s)" = "Darwin" ] || die "Bu betik yalnızca macOS'ta çalışır."
 command -v swiftc >/dev/null || die "swiftc bulunamadı. Önce şunu çalıştır:  xcode-select --install"
-[ -f widget/ShareWidget.swift ] || die "widget/ShareWidget.swift bulunamadı; betiği proje klasöründen çalıştır."
+[ -f widget/Bundle.swift ] || die "widget/ klasörü bulunamadı; betiği proje klasöründen çalıştır."
 
 ARCH="$(uname -m)"
 TARGET="${ARCH}-apple-macos14.0"
@@ -28,12 +28,14 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APPEX/Contents/MacOS"
 [ -f icon.icns ] && cp icon.icns "$APP/Contents/Resources/icon.icns"
 
 say "Widget derleniyor"
-swiftc -O -parse-as-library -application-extension -target "$TARGET" \
-  widget/ShareWidget.swift -o "$APPEX/Contents/MacOS/ShareWidget" \
+swiftc -O -swift-version 5 -parse-as-library -application-extension -target "$TARGET" \
+  widget/Common.swift widget/ShareWidget.swift widget/ProgramWidgets.swift \
+  widget/MatchBirthdayWidgets.swift widget/Bundle.swift \
+  -o "$APPEX/Contents/MacOS/ShareWidget" \
   -Xlinker -e -Xlinker _NSExtensionMain
 
 say "Ana uygulama derleniyor"
-swiftc -O -target "$TARGET" widget/HostApp.swift -o "$APP/Contents/MacOS/MediaStaffKSWidget"
+swiftc -O -swift-version 5 -target "$TARGET" widget/HostApp.swift -o "$APP/Contents/MacOS/MediaStaffKSWidget"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -59,8 +61,8 @@ cat > "$APPEX/Contents/Info.plist" <<PLIST
 <plist version="1.0"><dict>
   <key>CFBundleExecutable</key><string>ShareWidget</string>
   <key>CFBundleIdentifier</key><string>${BASE_ID}.sharewidget</string>
-  <key>CFBundleName</key><string>Paylaşım takibi</string>
-  <key>CFBundleDisplayName</key><string>Paylaşım takibi</string>
+  <key>CFBundleName</key><string>MediaStaffKS</string>
+  <key>CFBundleDisplayName</key><string>MediaStaffKS</string>
   <key>CFBundlePackageType</key><string>XPC!</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundleVersion</key><string>1</string>
@@ -107,5 +109,5 @@ fi
 
 say "Bitti!"
 echo "  Uygulama: $TARGET_DIR/MediaStaffKS-Widget.app (şimdi açılacak, bir uyarı çıkacak → Tamam)"
-echo "  Sonra: masaüstüne sağ tık → Widget'ları Düzenle → 'MediaStaffKS' → 'Paylaşım takibi'."
+echo "  Sonra: masaüstüne sağ tık → Widget'ları Düzenle → 'MediaStaffKS' → istediğin widget'ı sürükle."
 open "$TARGET_DIR/MediaStaffKS-Widget.app"

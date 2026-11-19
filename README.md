@@ -88,12 +88,14 @@ Paket büyüktür (yüzlerce MB; insightface + onnxruntime + Qt WebEngine).
    (Yalnızca `main.py`/`ks_data.py` değişiklikleri için; yeni kütüphane gerekiyorsa `build_mac.sh`.)
 
 
-## macOS widget'ı (Paylaşım takibi)
+## macOS widget'ları
 
-Masaüstüne eklenen gerçek bir widget (WidgetKit). Uygulama paylaşım takibini
-`~/Library/Application Support/MediaStaffKS/widget/share.json` dosyasına yazar, widget bunu okur.
+Masaüstüne eklenen gerçek widget'lar (WidgetKit): **Paylaşım takibi**, **Bugünün programı**,
+**Haftalık program**, **Sıradaki maç**, **Doğum günleri**. Uygulama verileri
+`~/Library/Application Support/MediaStaffKS/widget/` altına (share.json, extra.json) yazar, widget'lar okur.
 
     bash build_widget.sh      # Xcode Komut Satırı Araçları gerekir (xcode-select --install)
 
-Sonra masaüstüne sağ tık → *Widget'ları Düzenle* → **MediaStaffKS** → **Paylaşım takibi**
-(küçük / orta / büyük boyut). Widget her 15 dakikada bir tazelenir.
+Sonra masaüstüne sağ tık → *Widget'ları Düzenle* → **MediaStaffKS** → istediğin widget.
+Widget'lar kendi başlarına tazelenir (program satırı tam saatinde, diğerleri 15–60 dakikada bir);
+yeni veri için MediaStaffKS'ı açman yeterli.

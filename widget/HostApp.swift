@@ -6,8 +6,8 @@ final class HostDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "MediaStaffKS widget'ı kuruldu"
-        alert.informativeText = "Masaüstüne sağ tıkla → \"Widget'ları Düzenle\" → \"MediaStaffKS\" → \"Paylaşım takibi\" "
-            + "widget'ını masaüstüne sürükle. Veriler MediaStaffKS uygulaması açıldıkça güncellenir."
+        alert.informativeText = "Masaüstüne sağ tıkla → \"Widget'ları Düzenle\" → \"MediaStaffKS\" → istediğin widget'ı "
+            + "(Paylaşım takibi, Bugünün programı, Haftalık program, Sıradaki maç, Doğum günleri) masaüstüne sürükle."
         alert.addButton(withTitle: "Tamam")
         alert.runModal()
         NSApp.terminate(nil)

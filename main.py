@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Paylaşım takibi için macOS widget verisi yazılıyor (widget için: bash build_widget.sh)."
+UPDATE_NOTES = "Yeni macOS widget verileri: Bugünün/Haftalık program, Sıradaki maç, Doğum günleri."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -6491,12 +6491,61 @@ class MainWindow(QMainWindow):
         self.track_side.addStretch(1)
         self._write_widget_data(last, week["never"], ov["waiting"], day_text)
 
+    def _write_widget_extra(self):
+        """macOS widget'larının (widget/*.swift) okuduğu program / maç / doğum günü anlık görüntüsü (extra.json)."""
+        try:
+            import base64
+            from PyQt6.QtCore import QBuffer, QIODevice
+
+            def b64(pm) -> str:
+                if pm is None:
+                    return ""
+                buf = QBuffer()
+                buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                pm.save(buf, "PNG")
+                return base64.b64encode(bytes(buf.data())).decode("ascii")
+
+            today = date.today()
+            days = []
+            for pr in PROGRAMS:
+                by_day = {}
+                for it in pr["items"]:
+                    by_day.setdefault(it["date"], []).append(
+                        {"time": it.get("time", ""), "title": it.get("title", ""), "kind": it.get("kind", "meal")})
+                for iso, items in by_day.items():
+                    if iso >= (today - timedelta(days=1)).isoformat():
+                        items.sort(key=lambda i: i["time"] or "99:99")
+                        days.append({"date": iso, "subtitle": pr.get("subtitle", ""), "items": items})
+            days.sort(key=lambda d: d["date"])
+            fixtures = []
+            for fx in get_upcoming_fixtures()[:3]:
+                fixtures.append({"date": fx["date"].isoformat(), "time": fx.get("time", ""), "opponent": fx["opponent"],
+                                 "home": bool(fx["home"]), "stadium": fx.get("stadium", ""),
+                                 "oppLogo": b64(get_team_logo_pixmap(fx["opponent"], 96))})
+            birthdays = []
+            for b in get_birthday_list()[:6]:
+                nxt = today + timedelta(days=b["days_left"])
+                birthdays.append({"name": b["name"], "first": (b["name"].split() or [b["name"]])[0],
+                                  "next": nxt.isoformat(), "turning": nxt.year - b["date"].year,
+                                  "face": b64(get_player_photo_pixmap(b["name"], 96))})
+            data = {"updated": datetime.now().isoformat(timespec="seconds"), "program": days,
+                    "clubLogo": b64(get_club_logo_pixmap(96)), "fixtures": fixtures, "birthdays": birthdays}
+            folder = os.path.join(str(ks_data.user_data_dir()), "widget")
+            os.makedirs(folder, exist_ok=True)
+            tmp = os.path.join(folder, "extra.json.tmp")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False)
+            os.replace(tmp, os.path.join(folder, "extra.json"))
+        except Exception:  # noqa: BLE001
+            pass
+
     def _refresh_club_cards(self):
         self._refresh_share_track()
         self._refresh_next_match()
         self._refresh_fixture_rows()
         self._refresh_birthday_rows()
         self._refresh_today_program()
+        self._write_widget_extra()
 
     def _refresh_next_match(self):
         clear_layout(self.next_layout)

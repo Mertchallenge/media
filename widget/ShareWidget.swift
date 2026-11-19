@@ -1,52 +1,7 @@
-// MediaStaffKS — "Paylaşım takibi" macOS widget'ı (WidgetKit).
-// Veriyi MediaStaffKS uygulaması şu dosyaya yazar:
-//   ~/Library/Application Support/MediaStaffKS/widget/share.json
+// "Paylaşım takibi" widget'ı. Veri: share.json
 import WidgetKit
 import SwiftUI
 import AppKit
-
-// MARK: - Veri
-
-struct WPlayer: Codable, Identifiable {
-    let name: String
-    let first: String
-    let face: String            // base64 PNG ("" = fotoğraf yok)
-    var id: String { name }
-}
-
-struct WLast: Codable {
-    let date: String
-    let count: Int
-    let players: [WPlayer]
-}
-
-struct WWaiting: Codable, Identifiable {
-    let name: String
-    let days: Int?              // nil = hiç paylaşılmadı
-    var id: String { name }
-}
-
-struct WData: Codable {
-    let updated: String
-    let last: WLast?
-    let never: Int
-    let waiting: [WWaiting]
-}
-
-func realHomePath() -> String {
-    if let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir {
-        return String(cString: dir)          // sandbox içinde bile gerçek ev klasörü
-    }
-    return NSHomeDirectory()
-}
-
-func loadData() -> WData? {
-    let path = realHomePath() + "/Library/Application Support/MediaStaffKS/widget/share.json"
-    guard let raw = FileManager.default.contents(atPath: path) else { return nil }
-    return try? JSONDecoder().decode(WData.self, from: raw)
-}
-
-// MARK: - Zaman çizelgesi
 
 struct ShareEntry: TimelineEntry {
     let date: Date
@@ -57,32 +12,14 @@ struct ShareProvider: TimelineProvider {
     func placeholder(in context: Context) -> ShareEntry { ShareEntry(date: Date(), data: nil) }
 
     func getSnapshot(in context: Context, completion: @escaping (ShareEntry) -> Void) {
-        completion(ShareEntry(date: Date(), data: loadData()))
+        completion(ShareEntry(date: Date(), data: Store.read("share.json", as: WData.self)))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<ShareEntry>) -> Void) {
-        let entry = ShareEntry(date: Date(), data: loadData())
+        let entry = ShareEntry(date: Date(), data: Store.read("share.json", as: WData.self))
         completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(15 * 60))))
     }
 }
-
-// MARK: - Renkler
-
-extension Color {
-    init(hex: UInt32) {
-        self.init(red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255,
-                  blue: Double(hex & 0xFF) / 255)
-    }
-}
-let kBg1 = Color(hex: 0x0E1A14)
-let kBg2 = Color(hex: 0x0A0E0C)
-let kGreen = Color(hex: 0x00A86B)
-let kGreenHi = Color(hex: 0x2FD69A)
-let kText = Color(hex: 0xE9F2ED)
-let kMuted = Color(hex: 0x8CA095)
-let kAmber = Color(hex: 0xF2B24A)
-
-// MARK: - Parçalar
 
 struct FaceView: View {
     let player: WPlayer
@@ -90,28 +27,13 @@ struct FaceView: View {
 
     var body: some View {
         VStack(spacing: 3) {
-            avatar
-                .frame(width: size, height: size)
-                .clipShape(Circle())
+            ImageB64(b64: player.face, fallback: player.first, size: size)
             Text(player.first)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(kMuted)
                 .lineLimit(1)
         }
         .frame(width: size + 10)
-    }
-
-    @ViewBuilder var avatar: some View {
-        if !player.face.isEmpty, let data = Data(base64Encoded: player.face), let img = NSImage(data: data) {
-            Image(nsImage: img).resizable().scaledToFill()
-        } else {
-            ZStack {
-                kGreen.opacity(0.35)
-                Text(String(player.first.prefix(1)))
-                    .font(.system(size: size * 0.45, weight: .bold))
-                    .foregroundColor(kText)
-            }
-        }
     }
 }
 
@@ -141,10 +63,7 @@ struct HeaderView: View {
     let trailing: String
     var body: some View {
         HStack {
-            Text(title)
-                .font(.system(size: 10, weight: .bold))
-                .tracking(0.8)
-                .foregroundColor(kGreenHi)
+            SectionTitle(text: title)
             Spacer()
             Text(trailing)
                 .font(.system(size: 11, weight: .semibold))
@@ -153,17 +72,12 @@ struct HeaderView: View {
     }
 }
 
-// MARK: - Ana görünüm
-
 struct ShareWidgetView: View {
     @Environment(\.widgetFamily) var family
     let entry: ShareEntry
 
     var body: some View {
-        content
-            .containerBackground(for: .widget) {
-                LinearGradient(colors: [kBg1, kBg2], startPoint: .topLeading, endPoint: .bottomTrailing)
-            }
+        content.containerBackground(for: .widget) { WidgetBackground() }
     }
 
     @ViewBuilder var content: some View {
@@ -175,8 +89,7 @@ struct ShareWidgetView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                Text("PAYLAŞIM TAKİBİ")
-                    .font(.system(size: 10, weight: .bold)).tracking(0.8).foregroundColor(kGreenHi)
+                SectionTitle(text: "PAYLAŞIM TAKİBİ")
                 Spacer()
                 Text(entry.data == nil ? "MediaStaffKS uygulamasını bir kez aç." : "Henüz paylaşım kaydı yok.")
                     .font(.system(size: 12)).foregroundColor(kMuted)
@@ -187,8 +100,7 @@ struct ShareWidgetView: View {
 
     func small(_ d: WData, _ last: WLast) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("PAYLAŞIM TAKİBİ")
-                .font(.system(size: 10, weight: .bold)).tracking(0.8).foregroundColor(kGreenHi)
+            SectionTitle(text: "PAYLAŞIM TAKİBİ")
             Text("Son paylaşım").font(.system(size: 11)).foregroundColor(kMuted)
             Text(last.date).font(.system(size: 17, weight: .bold)).foregroundColor(kText)
             Text("\(last.count) oyuncu").font(.system(size: 13)).foregroundColor(kText)
@@ -236,9 +148,6 @@ struct ShareWidgetView: View {
     }
 }
 
-// MARK: - Widget
-
-@main
 struct ShareTrackingWidget: Widget {
     let kind = "ShareTracking"
 
