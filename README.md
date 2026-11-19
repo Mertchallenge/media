@@ -86,3 +86,14 @@ Paket büyüktür (yüzlerce MB; insightface + onnxruntime + Qt WebEngine).
 1. `main.py` içinde `APP_VERSION`'ı artır ve `UPDATE_NOTES`'a kısa bir not yaz.
 2. `main`'e push et. Uygulamalar bir sonraki açılışta güncellemeyi sunar.
    (Yalnızca `main.py`/`ks_data.py` değişiklikleri için; yeni kütüphane gerekiyorsa `build_mac.sh`.)
+
+
+## macOS widget'ı (Paylaşım takibi)
+
+Masaüstüne eklenen gerçek bir widget (WidgetKit). Uygulama paylaşım takibini
+`~/Library/Application Support/MediaStaffKS/widget/share.json` dosyasına yazar, widget bunu okur.
+
+    bash build_widget.sh      # Xcode Komut Satırı Araçları gerekir (xcode-select --install)
+
+Sonra masaüstüne sağ tık → *Widget'ları Düzenle* → **MediaStaffKS** → **Paylaşım takibi**
+(küçük / orta / büyük boyut). Widget her 15 dakikada bir tazelenir.

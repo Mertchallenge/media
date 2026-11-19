@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Program için menü çubuğu simgesi, hep üstte duran mini pencere ve Mac Takvim'e aktarma eklendi."
+UPDATE_NOTES = "Paylaşım takibi için macOS widget verisi yazılıyor (widget için: bash build_widget.sh)."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -6405,6 +6405,37 @@ class MainWindow(QMainWindow):
             remove_last_share_entry()
             self._refresh_share_track()
 
+    def _write_widget_data(self, last, never: int = 0, waiting=(), day_text=None):
+        """macOS widget'ının (widget/ShareWidget.swift) okuduğu anlık görüntüyü yazar. Hata olursa sessizce geçer."""
+        try:
+            import base64
+            from PyQt6.QtCore import QBuffer, QIODevice
+            players = []
+            for n in (last["players"] if last else [])[:8]:
+                face = ""
+                pm = get_player_photo_pixmap(n, 96)
+                if pm is not None:
+                    buf = QBuffer()
+                    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                    pm.save(buf, "PNG")
+                    face = base64.b64encode(bytes(buf.data())).decode("ascii")
+                players.append({"name": n, "first": (n.split() or [n])[0], "face": face})
+            data = {
+                "updated": datetime.now().isoformat(timespec="seconds"),
+                "last": ({"date": day_text(last["date"]) if day_text else last["date"],
+                          "count": len(last["players"]), "players": players} if last else None),
+                "never": int(never),
+                "waiting": [{"name": n, "days": days} for n, days in list(waiting)[:8]],
+            }
+            folder = os.path.join(str(ks_data.user_data_dir()), "widget")
+            os.makedirs(folder, exist_ok=True)
+            tmp = os.path.join(folder, "share.json.tmp")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False)
+            os.replace(tmp, os.path.join(folder, "share.json"))
+        except Exception:  # noqa: BLE001
+            pass
+
     def _refresh_share_track(self):
         clear_layout(self.track_faces)
         clear_layout(self.track_side)
@@ -6416,6 +6447,7 @@ class MainWindow(QMainWindow):
             hint.setWordWrap(True)
             self.track_faces.addWidget(hint)
             self.track_faces.addStretch(1)
+            self._write_widget_data(None)
             return
         universe = self._share_universe()
         ov = share_overview(log, universe, date.today())
@@ -6457,6 +6489,7 @@ class MainWindow(QMainWindow):
             warn = make_chip("Son 7 günde herkes paylaşıldı", K_GREEN_HI, K_GREEN_BG)
         self.track_side.addWidget(warn, 0, Qt.AlignmentFlag.AlignLeft)
         self.track_side.addStretch(1)
+        self._write_widget_data(last, week["never"], ov["waiting"], day_text)
 
     def _refresh_club_cards(self):
         self._refresh_share_track()
