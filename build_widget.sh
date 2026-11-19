@@ -117,6 +117,6 @@ else
 fi
 
 say "Bitti!"
-echo "  Uygulama: $INSTALLED (şimdi açılacak, bir uyarı çıkacak → Tamam)"
+echo "  Uygulama: $INSTALLED (şimdi açılacak, bir bilgi penceresi çıkacak → Tamam)"
 echo "  Sonra: masaüstüne sağ tık → Widget'ları Düzenle → 'MediaStaffKS' → istediğin widget'ı sürükle."
-open "$INSTALLED"
+open "$INSTALLED" --args --setup
