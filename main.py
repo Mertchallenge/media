@@ -1717,24 +1717,34 @@ def player_photo_source_path(name: str):
 
 
 def _circular_pixmap(raw: QPixmap, size: int) -> "QPixmap | None":
+    """Yuvarlak avatar: Retina'da keskin (cihaz piksel oranına göre çizer), portre fotoğrafta yüzü üstten kırpar."""
     if raw.isNull():
         return None
-    scaled = raw.scaled(
-        size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-        Qt.TransformationMode.SmoothTransformation,
-    )
-    x = max(0, (scaled.width() - size) // 2)
-    y = max(0, (scaled.height() - size) // 2)
-    cropped = scaled.copy(x, y, size, size)
-    result = QPixmap(size, size)
+    try:
+        dpr = max(1.0, float(QApplication.primaryScreen().devicePixelRatio()))
+    except Exception:
+        dpr = 2.0
+    px = max(size, int(round(size * dpr)))
+    w, h = raw.width(), raw.height()
+    side = min(w, h)
+    if h > w:                      # portre/boy fotoğrafı: baş üstte — genişliğin %86'sı kadar kare, üstten
+        side = int(w * 0.86)
+        x, y = (w - side) // 2, int(h * 0.01)
+    else:
+        x, y = (w - side) // 2, (h - side) // 2
+    cropped = raw.copy(x, y, side, side).scaled(
+        px, px, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    result = QPixmap(px, px)
     result.fill(Qt.GlobalColor.transparent)
     painter = QPainter(result)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
     path = QPainterPath()
-    path.addEllipse(QRectF(0, 0, size, size))
+    path.addEllipse(QRectF(0, 0, px, px))
     painter.setClipPath(path)
     painter.drawPixmap(0, 0, cropped)
     painter.end()
+    result.setDevicePixelRatio(px / size)
     return result
 
 
@@ -3690,6 +3700,14 @@ class ReviewPage(QWidget):
 # SAYFA: PAYLAŞIM — Drive link + mesaj listesi · İçerik dengesi · Sosyal medya boyutları
 # ==========================================================================================
 
+def ig_dark_background(r: int, g: int, b: int) -> str:
+    """CSS 'invert(1) hue-rotate(180deg)' sonrası tam (r,g,b) rengini veren arka plan rengi.
+    hue-rotate(180°) kendi tersidir; bu yüzden önce onu uygulayıp sonra ters çeviriyoruz."""
+    m = ((-0.574, 1.430, 0.144), (0.426, 0.430, 0.144), (0.426, 1.430, -0.856))
+    hr = [max(0.0, min(255.0, m[i][0] * r + m[i][1] * g + m[i][2] * b)) for i in range(3)]
+    return "#%02X%02X%02X" % tuple(int(round(255 - v)) for v in hr)
+
+
 def webengine_pip_spec() -> str:
     """Yüklü PyQt6 sürümüyle uyumlu PyQt6-WebEngine sürüm belirteci (örn. PyQt6 6.7.1 → PyQt6-WebEngine~=6.7.0)."""
     try:
@@ -3858,7 +3876,8 @@ class InstagramPanel(QWidget):
         view.setPage(page)
         page.setBackgroundColor(QColor(K_CARD))
         # Instagram'ın beyaz sayfasını uygulamanın koyu temasına uydur: sayfayı ters çevir, fotoğrafları geri çevir.
-        inv = "#%02X%02X%02X" % tuple(255 - v for v in (QColor(K_CARD).red(), QColor(K_CARD).green(), QColor(K_CARD).blue()))
+        c0 = QColor(K_CARD)
+        inv = ig_dark_background(c0.red(), c0.green(), c0.blue())
         css = (f"html{{background:{inv}!important;filter:invert(1) hue-rotate(180deg)!important;}}"
                "body{background:transparent!important;}"
                "img,video,canvas,[style*='background-image']{filter:invert(1) hue-rotate(180deg)!important;}")
