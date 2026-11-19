@@ -12587,8 +12587,11 @@ def run_selftest() -> int:
         if p is None or QPixmap(str(p)).isNull():
             raise RuntimeError("kulüp logosu bulunamadı/yüklenemedi")
     check("Qt + kulüp logosu", _logo)
-    check("ksmedya logosu", lambda: ks_data.find_asset(*KSMEDYA_LOGO_FILENAMES) or (_ for _ in ()).throw(
-        RuntimeError("ksmedya_logo.png yok")))
+    def _ksmedya():
+        # Dosya yoksa uygulama gömülü yedeği (KSMEDYA_LOGO_BASE64) kullanır; yedek de yoksa hata
+        if ks_data.find_asset(*KSMEDYA_LOGO_FILENAMES) is None and not KSMEDYA_LOGO_BASE64.strip():
+            raise RuntimeError("ksmedya_logo.png ve gömülü yedeği yok")
+    check("ksmedya logosu", _ksmedya)
     check("veri katmanı", lambda: ks_data.load_data())
     print(f"Sürüm {APP_VERSION} · frozen={is_frozen()} · veri klasörü={ks_data.user_data_dir()}")
     print("SELFTEST " + ("BAŞARISIZ: " + ", ".join(problems) if problems else "BAŞARILI"))

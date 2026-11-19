@@ -49,17 +49,20 @@ for f in kocaelispor_logo.png ksmedya_logo.png; do
     mv "$f" "$f.bozuk"
   fi
 done
-if [ ! -f kocaelispor_logo.png ]; then
-  "$PY" - <<'PYEOF' || die "kocaelispor_logo.png üretilemedi; geçerli bir PNG'yi bu adla proje klasörüne koy."
-import re, base64
+"$PY" - <<'PYEOF' || die "Logo dosyaları üretilemedi; geçerli PNG'leri proje klasörüne koy."
+import os, re, base64
 s = open("main.py", encoding="utf-8").read()
-m = re.search(r'CLUB_LOGO_BASE64\s*=\s*\(?\s*((?:"[^"]*"\s*)+)', s)
-data = base64.b64decode("".join(re.findall(r'"([^"]*)"', m.group(1))))
-assert data[:4] == b"\x89PNG"
-open("kocaelispor_logo.png", "wb").write(data)
-print("kocaelispor_logo.png main.py içindeki yedekten yeniden yazıldı")
+for fname, const in (("kocaelispor_logo.png", "CLUB_LOGO_BASE64"), ("ksmedya_logo.png", "KSMEDYA_LOGO_BASE64")):
+    if os.path.isfile(fname):
+        continue
+    m = re.search(const + r'\s*=\s*\(?\s*((?:"[^"]*"\s*)+)', s)
+    if not m:
+        print(f"UYARI: {fname} yok ve main.py'de yedeği bulunamadı"); continue
+    data = base64.b64decode("".join(re.findall(r'"([^"]*)"', m.group(1))))
+    assert data[:4] == b"\x89PNG"
+    open(fname, "wb").write(data)
+    print(f"{fname} main.py içindeki yedekten yeniden yazıldı")
 PYEOF
-fi
 
 # --- İkon -----------------------------------------------------------------------------------
 say "Uygulama ikonu hazırlanıyor"
