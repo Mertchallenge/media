@@ -3152,6 +3152,70 @@ class HBar(QWidget):
         p.end()
 
 
+class BalanceRow(QWidget):
+    """İçerik dengesi satırı — tek parça çizilir (hizalama / kısalma sorunu olmasın)."""
+    NAME_W = 210
+    RIGHT_W = 340
+
+    def __init__(self, name: str, count: int, ratio: float, color: str, hist: str, badges: list, parent=None):
+        super().__init__(parent)
+        self.name, self.count, self.ratio, self.color = name, count, max(0.0, min(1.0, ratio)), color
+        self.hist, self.badges = hist, badges   # badges: [(metin, yazı_rengi, zemin_rengi)]
+        self.setFixedHeight(46)
+        self.setMinimumWidth(520)
+        self.setToolTip(name)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        p.setPen(QPen(QColor(K_LINE), 1))
+        p.drawLine(0, 0, w, 0)
+        base = p.font()
+        bold = p.font()
+        bold.setBold(True)
+        bold.setPointSizeF(max(base.pointSizeF(), 10.5) + 1.0)
+        p.setFont(bold)
+        p.setPen(QColor(K_TEXT))
+        p.drawText(QRectF(0, 0, self.NAME_W, h), int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                   p.fontMetrics().elidedText(self.name, Qt.TextElideMode.ElideRight, self.NAME_W))
+        small = p.font()
+        small.setBold(False)
+        small.setPointSizeF(max(base.pointSizeF(), 10.5))
+        p.setFont(small)
+        fm = p.fontMetrics()
+        # sağdan sola: rozetler, geçmiş metni, sayı
+        x = w
+        for text, fg, bg in reversed(self.badges):
+            bw = fm.horizontalAdvance(text) + 22
+            x -= bw
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(bg))
+            p.drawRoundedRect(QRectF(x, (h - 26) / 2.0, bw, 26), 13, 13)
+            p.setPen(QColor(fg))
+            p.drawText(QRectF(x, 0, bw, h), int(Qt.AlignmentFlag.AlignCenter), text)
+            x -= 8
+        right_edge = min(x, w - self.RIGHT_W + 130)
+        if self.hist:
+            hw = 130
+            p.setPen(QColor(K_MUTED))
+            p.drawText(QRectF(w - self.RIGHT_W + 50, 0, hw, h), int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), self.hist)
+        cnt_x = w - self.RIGHT_W
+        p.setPen(QColor(K_GREEN_HI))
+        p.drawText(QRectF(cnt_x, 0, 44, h), int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight), str(self.count))
+        # çubuk
+        bx0 = self.NAME_W + 16
+        bx1 = cnt_x - 16
+        if bx1 > bx0:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(K_LINE))
+            p.drawRoundedRect(QRectF(bx0, (h - 10) / 2.0, bx1 - bx0, 10), 5, 5)
+            if self.ratio > 0:
+                p.setBrush(QColor(self.color))
+                p.drawRoundedRect(QRectF(bx0, (h - 10) / 2.0, max(10.0, (bx1 - bx0) * self.ratio), 10), 5, 5)
+        p.end()
+
+
 def _flash(button: QPushButton, text: str = "Kopyalandı", ms: int = 1500):
     old = button.text()
     button.setText(text)
@@ -3844,8 +3908,9 @@ class SharePage(QWidget):
             rl.setSpacing(10)
             col = QVBoxLayout()
             col.setSpacing(2)
-            name = ElidedLabel(e["name"])
+            name = QLabel(e["name"])
             name.setObjectName("bdName")
+            name.setToolTip(e["name"])
             sub_text = f"{e['count']} fotoğraf" + (f" · {e['best']} seçilen" if e["best"] else "")
             if e["keeper"]:
                 sub_text += " · kaleci"
@@ -3855,7 +3920,9 @@ class SharePage(QWidget):
             col.addWidget(sub)
             namew = QWidget()
             namew.setLayout(col)
-            namew.setFixedWidth(210)
+            namew.setMinimumWidth(210)
+            namew.setMaximumWidth(210)
+            namew.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
             rl.addWidget(namew)
             edit = QLineEdit(links.get(e["name"], ""))
             edit.setPlaceholderText("Drive linkini yapıştır")
@@ -4030,38 +4097,16 @@ class SharePage(QWidget):
 
         top = max(counts.values()) or 1
         for n, v in sorted(counts.items(), key=lambda kv: (kv[1], turkish_lower(kv[0]))):
-            row = QFrame()
-            row.setObjectName("rowLine")
-            row.setFixedHeight(46)
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(12)
-            name = ElidedLabel(n)
-            name.setObjectName("bdName")
-            name.setFixedWidth(200)
-            rl.addWidget(name)
             color = K_RED_HI if v == 0 else (K_AMBER if v < low_limit else K_GREEN)
-            rl.addWidget(HBar(v / float(top), color), 1)
-            cnt = QLabel(str(v))
-            cnt.setObjectName("valueMono")
-            cnt.setFixedWidth(44)
-            cnt.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            rl.addWidget(cnt)
-            hist = QLabel(f"son 5 işlem: {hist_totals.get(n, 0)}" if hist_totals else "")
-            hist.setObjectName("dateSub")
-            hist.setFixedWidth(120)
-            rl.addWidget(hist)
+            badges = []
             if v == 0:
-                rl.addWidget(make_chip("Hiç çıkmadı", K_RED_HI, K_RED_BG))
+                badges.append(("Hiç çıkmadı", K_RED_HI, K_RED_BG))
             elif v < low_limit:
-                rl.addWidget(make_chip("Az çıktı", K_AMBER, K_AMBER_BG))
-            else:
-                spacer = QLabel("")
-                spacer.setFixedWidth(80)
-                rl.addWidget(spacer)
+                badges.append(("Az çıktı", K_AMBER, K_AMBER_BG))
             if ref_counts.get(n) == 1:
-                rl.addWidget(make_chip("1 referans", K_BLUE, K_BLUE_BG))
-            self.bal_rows.addWidget(row)
+                badges.append(("1 referans", K_BLUE, K_BLUE_BG))
+            hist = f"son 5 işlem: {hist_totals.get(n, 0)}" if hist_totals else ""
+            self.bal_rows.addWidget(BalanceRow(n, v, v / float(top), color, hist, badges))
         self.bal_rows.addStretch(1)
 
     # ---------------------------------------------------------------- 3) Sosyal medya
@@ -4981,7 +5026,7 @@ class MainWindow(QMainWindow):
         nav_inner = QWidget()
         nav_layout = QVBoxLayout(nav_inner)
         nav_layout.setContentsMargins(0, 0, 0, 0)
-        nav_layout.setSpacing(4)
+        nav_layout.setSpacing(2)
         for index, (icon_name, label) in enumerate((
                 ("home", "Ana Sayfa"), ("image", "Ayıklama"), ("check", "İnceleme"), ("share", "Paylaşım"),
                 ("trophy", "Maçlar"), ("gift", "Doğum"), ("megaphone", "Basın"), ("report", "Raporlar"),
@@ -4995,7 +5040,7 @@ class MainWindow(QMainWindow):
             if not icon.isNull():
                 btn.setIcon(icon)
                 btn.setIconSize(QSize(22, 22))
-            btn.setFixedSize(66, 54)
+            btn.setFixedSize(66, 52)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.nav_group.addButton(btn, index)
             self.nav_buttons.append(btn)
@@ -5028,26 +5073,6 @@ class MainWindow(QMainWindow):
         switch_btn.clicked.connect(self._request_switch)
         layout.addWidget(switch_btn, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addSpacing(8)
-
-        for icon_name, label, url, fallback in (
-            ("instagram", "Instagram", "https://instagram.com", "IG"),
-            ("x", "X", "https://x.com", "X"),
-            ("facebook", "Facebook", "https://facebook.com", "f"),
-            ("drive", "Google Drive", "https://drive.google.com", "GD"),
-        ):
-            btn = QPushButton()
-            btn.setObjectName("iconBtn")
-            btn.setFixedSize(40, 40)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setToolTip(f"{label} (genel sayfayı açar)")
-            icon = make_icon(icon_name, "#B9C8BF", 18)
-            if icon.isNull():
-                btn.setText(fallback)
-            else:
-                btn.setIcon(icon)
-                btn.setIconSize(QSize(18, 18))
-            btn.clicked.connect(lambda checked=False, u=url: QDesktopServices.openUrl(QUrl(u)))
-            layout.addWidget(btn, 0, Qt.AlignmentFlag.AlignHCenter)
 
         return rail
 
@@ -5090,6 +5115,26 @@ class MainWindow(QMainWindow):
         pill_row.addWidget(self.date_label)
         pill_row.addWidget(dot)
         pill_row.addWidget(self.time_label)
+        for icon_name, label, url, fallback in (
+            ("instagram", "Instagram", "https://instagram.com", "IG"),
+            ("x", "X", "https://x.com", "X"),
+            ("facebook", "Facebook", "https://facebook.com", "f"),
+            ("drive", "Google Drive", "https://drive.google.com", "GD"),
+        ):
+            sbtn = QPushButton()
+            sbtn.setObjectName("iconBtn")
+            sbtn.setFixedSize(38, 38)
+            sbtn.setCursor(Qt.CursorShape.PointingHandCursor)
+            sbtn.setToolTip(f"{label} (genel sayfayı açar)")
+            sicon = make_icon(icon_name, "#B9C8BF", 17)
+            if sicon.isNull():
+                sbtn.setText(fallback)
+            else:
+                sbtn.setIcon(sicon)
+                sbtn.setIconSize(QSize(17, 17))
+            sbtn.clicked.connect(lambda checked=False, u=url: QDesktopServices.openUrl(QUrl(u)))
+            row.addWidget(sbtn)
+        row.addSpacing(6)
         row.addWidget(pill)
         return header
 
