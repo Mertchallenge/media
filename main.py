@@ -2508,7 +2508,7 @@ PAGE_META = [
     ("MediaStaffKS", "Kocaelispor Medya Departmanı · Genel Bakış"),
     ("Yüz Ayıklama", "Referans ve medya klasörlerinden otomatik oyuncu ayıklama"),
     ("İnceleme", "Emin olunmayan eşleşmeleri onayla ya da düzelt"),
-    ("Paylaşım", "Oyunculara Drive linki ve mesaj · içerik dengesi · sosyal medya boyutları"),
+    ("Sosyal", "Sosyal medya boyutları + logo · içerik dengesi"),
     ("Maçlar", "Fikstür, maç detayı ve yapay zekâ yorumu"),
     ("Doğum Günleri", "Kadronun yaklaşan doğum günleri"),
     ("Basın Günleri", "Hangi oyuncunun hangi hafta röportaj aldığının takvimi"),
@@ -2634,7 +2634,8 @@ MATCHDAY_PHASES = [
         ("a_skor", "Skor görseli", ""),
         ("a_ayikla", "Fotoğraflar yüz ayıklamadan geçti", "extract"),
         ("a_incele", "Karışık fotoğraflar incelendi", "review"),
-        ("a_paylas", "Oyunculara Drive linkleri gönderildi", "share"),
+        ("a_paylas", "Oyunculara Drive linkleri gönderildi", ""),
+        ("a_sosyal", "Sosyal medya görselleri hazırlandı", "share"),
         ("a_mvp", "Maçın adamı paylaşımı", ""),
         ("a_basin", "Teknik direktör / oyuncu açıklamaları", ""),
         ("a_tesekkur", "Taraftara teşekkür paylaşımı", ""),
@@ -3715,7 +3716,7 @@ class ReviewPage(QWidget):
 # ==========================================================================================
 
 class SharePage(QWidget):
-    TABS = ("Paylaşım", "İçerik dengesi", "Sosyal medya")
+    TABS = ("Sosyal medya", "İçerik dengesi")
 
     def __init__(self, win):
         super().__init__()
@@ -3724,11 +3725,6 @@ class SharePage(QWidget):
         self.extra = load_medya_extra()
         self.social_worker = None
         self._social_extra_folder = ""
-        self._link_edits: dict = {}
-        self._msg_timer = QTimer(self)
-        self._msg_timer.setSingleShot(True)
-        self._msg_timer.setInterval(600)
-        self._msg_timer.timeout.connect(self._save_message)
         self._build()
 
     # ---------------------------------------------------------------- iskelet
@@ -3763,9 +3759,8 @@ class SharePage(QWidget):
         outer.addWidget(top)
 
         self.tabs = QStackedWidget()
-        self.tabs.addWidget(self._build_share_tab())
-        self.tabs.addWidget(self._build_balance_tab())
         self.tabs.addWidget(self._build_social_tab())
+        self.tabs.addWidget(self._build_balance_tab())
         outer.addWidget(self.tabs, 1)
 
     def _set_tab(self, i: int):
@@ -3783,16 +3778,10 @@ class SharePage(QWidget):
         self.folder_label.set_full_text(self.root or "Çıktı klasörü seçilmedi")
         self.folder_label.setProperty("filled", bool(self.root))
         repolish(self.folder_label)
-        base = os.path.basename(self.root.rstrip("/\\")) if self.root else ""
-        if base and not self.event_edit.text().strip():
-            self.event_edit.setText(base)
         self._refresh_tab()
 
     def _refresh_tab(self):
-        i = self.tabs.currentIndex()
-        if i == 0:
-            self._refresh_share()
-        elif i == 1:
+        if self.tabs.currentIndex() == 1:
             self._refresh_balance()
         else:
             self._refresh_social_summary()
@@ -3803,207 +3792,47 @@ class SharePage(QWidget):
         lab.setWordWrap(True)
         return lab
 
-    # ---------------------------------------------------------------- 1) Paylaşım
-    def _build_share_tab(self) -> QWidget:
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(16)
-
-        opts, o = self.win._card(margins=(18, 14, 18, 14), spacing=10)
-        row1 = QHBoxLayout()
-        row1.setSpacing(10)
-        row1.addWidget(QLabel("Etkinlik"))
-        self.event_edit = QLineEdit()
-        self.event_edit.setPlaceholderText("örn. Maç günü, 19 Kasım")
-        self.event_edit.setFixedWidth(240)
-        row1.addWidget(self.event_edit)
-        row1.addSpacing(16)
-        row1.addWidget(QLabel("Oyuncu başına en iyi"))
+    # ---------------------------------------------------------------- Seçilen (en iyi) fotoğraflar
+    def _build_selection_card(self) -> QWidget:
+        card, c = self.win._card(margins=(20, 16, 20, 16), spacing=10)
+        c.addWidget(self.win._section_label("En iyi fotoğraflar"))
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(QLabel("Oyuncu başına en iyi"))
         self.best_spin = QSpinBox()
         self.best_spin.setRange(1, 30)
         self.best_spin.setValue(int(self.extra.get("best_count", DEFAULT_BEST_COUNT)))
-        row1.addWidget(self.best_spin)
-        row1.addWidget(QLabel("kare"))
-        self.make_sel_btn = QPushButton("Seçilenleri oluştur")
+        row.addWidget(self.best_spin)
+        row.addWidget(QLabel("kare"))
+        self.make_sel_btn = QPushButton("Seçilenleri oluştur / yenile")
         self.make_sel_btn.setObjectName("smallBtn")
         self.make_sel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.make_sel_btn.setToolTip("Her oyuncunun en net / en büyük / en iyi kadrajlı karelerini SECILENLER klasörüne kopyalar.")
         self.make_sel_btn.clicked.connect(self._make_selections)
-        row1.addWidget(self.make_sel_btn)
-        row1.addStretch(1)
-        o.addLayout(row1)
-        self.msg_edit = QPlainTextEdit()
-        self.msg_edit.setPlainText(str(self.extra.get("share_message") or DEFAULT_SHARE_MESSAGE))
-        self.msg_edit.setFixedHeight(68)
-        self.msg_edit.textChanged.connect(self._msg_timer.start)
-        o.addWidget(self.msg_edit)
-        hint = QLabel("Mesaj şablonu: {ad} · {etkinlik} · {adet} · {link} yer tutucuları her oyuncu için doldurulur.")
-        hint.setObjectName("dateSub")
-        o.addWidget(hint)
-        lay.addWidget(opts)
+        row.addWidget(self.make_sel_btn)
+        self.open_sel_btn = QPushButton("Klasörü aç")
+        self.open_sel_btn.setObjectName("outlineSmall")
+        self.open_sel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_sel_btn.clicked.connect(self._open_selection)
+        row.addWidget(self.open_sel_btn)
+        row.addStretch(1)
+        c.addLayout(row)
+        self.sel_status = QLabel("Ayıklama bitince her oyuncunun en iyi kareleri otomatik seçilir.")
+        self.sel_status.setObjectName("dateSub")
+        self.sel_status.setWordWrap(True)
+        c.addWidget(self.sel_status)
+        return card
 
-        card, c = self.win._card(margins=(18, 16, 18, 14), spacing=8)
-        head = QHBoxLayout()
-        self.share_count_label = self.win._section_label("Oyuncular")
-        head.addWidget(self.share_count_label)
-        head.addStretch(1)
-        self.share_status = QLabel("")
-        self.share_status.setObjectName("dateSub")
-        head.addWidget(self.share_status)
-        c.addLayout(head)
-        inner = QWidget()
-        self.share_rows = QVBoxLayout(inner)
-        self.share_rows.setContentsMargins(0, 0, 0, 0)
-        self.share_rows.setSpacing(0)
-        c.addWidget(self.win._scroll(inner), 1)
-        foot = QHBoxLayout()
-        foot.setSpacing(10)
-        for text, slot in (("Tüm mesajları kopyala", self._copy_all), ("Listeyi CSV kaydet", self._export_csv),
-                           ("Klasörü aç", self._open_root)):
-            b = QPushButton(text)
-            b.setObjectName("outlineSmall")
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.clicked.connect(slot)
-            foot.addWidget(b)
-        foot.addStretch(1)
-        c.addLayout(foot)
-        lay.addWidget(card, 1)
-        return page
-
-    def _links(self) -> dict:
-        return self.extra.setdefault("share_links", {}).setdefault(os.path.abspath(self.root), {})
-
-    def _save_message(self):
-        self.extra["share_message"] = self.msg_edit.toPlainText()
-        save_medya_extra(self.extra)
-
-    def _message_for(self, e: dict, link: str) -> str:
-        tpl = self.msg_edit.toPlainText().strip() or DEFAULT_SHARE_MESSAGE
-        shown = e["count"]
-        return (tpl.replace("{ad}", e["name"]).replace("{etkinlik}", self.event_edit.text().strip() or "etkinlik")
-                .replace("{adet}", str(shown)).replace("{link}", link.strip() or "[LİNK]"))
-
-    def _refresh_share(self):
-        clear_layout(self.share_rows)
-        self._link_edits = {}
-        if not self.root:
-            self.share_rows.addWidget(self._empty_hint("Önce bir çıktı klasörü seç (yüz ayıklamanın oluşturduğu tarih klasörü)."))
-            self.share_rows.addStretch(1)
-            self.share_count_label.setText(turkish_upper("Oyuncular"))
-            return
-        entries = build_share_entries(self.root)
-        self.share_count_label.setText(turkish_upper(f"Oyuncular · {len(entries)}"))
-        if not entries:
-            self.share_rows.addWidget(self._empty_hint("Bu klasörde oyuncu klasörü bulunamadı."))
-            self.share_rows.addStretch(1)
-            return
-        links = self._links()
-        for e in entries:
-            row = QFrame()
-            row.setObjectName("rowLine")
-            row.setFixedHeight(60)
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(10)
-            col = QVBoxLayout()
-            col.setSpacing(2)
-            name = QLabel(e["name"])
-            name.setObjectName("bdName")
-            name.setToolTip(e["name"])
-            sub_text = f"{e['count']} fotoğraf" + (f" · {e['best']} seçilen" if e["best"] else "")
-            if e["keeper"]:
-                sub_text += " · kaleci"
-            sub = QLabel(sub_text)
-            sub.setObjectName("dateSub")
-            col.addWidget(name)
-            col.addWidget(sub)
-            namew = QWidget()
-            namew.setLayout(col)
-            namew.setMinimumWidth(210)
-            namew.setMaximumWidth(210)
-            namew.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-            rl.addWidget(namew)
-            edit = QLineEdit(links.get(e["name"], ""))
-            edit.setPlaceholderText("Drive linkini yapıştır")
-            edit.setMinimumHeight(34)
-            edit.editingFinished.connect(lambda n=e["name"], ed=edit: self._link_changed(n, ed.text()))
-            self._link_edits[e["name"]] = edit
-            rl.addWidget(edit, 1)
-            for text, path in (("Klasör", e["path"]), ("Seçilenler", e["best_path"])):
-                b = QPushButton(text)
-                b.setObjectName("outlineSmall")
-                b.setFixedHeight(32)
-                b.setEnabled(os.path.isdir(path))
-                b.setCursor(Qt.CursorShape.PointingHandCursor)
-                b.clicked.connect(lambda checked=False, p=path: QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
-                rl.addWidget(b)
-            cp = QPushButton("Mesajı kopyala")
-            cp.setObjectName("smallBtn")
-            cp.setFixedHeight(32)
-            cp.setCursor(Qt.CursorShape.PointingHandCursor)
-            cp.clicked.connect(lambda checked=False, e=e, ed=edit, b=cp: self._copy_one(e, ed.text(), b))
-            rl.addWidget(cp)
-            self.share_rows.addWidget(row)
-        self.share_rows.addStretch(1)
-
-    def _link_changed(self, name: str, text: str):
-        links = self._links()
-        text = text.strip()
-        if text:
-            links[name] = text
-        else:
-            links.pop(name, None)
-        save_medya_extra(self.extra)
-
-    def _copy_one(self, e: dict, link: str, button: QPushButton):
-        if not link.strip():
-            self.share_status.setText("Önce bu oyuncunun Drive linkini yapıştır.")
-            return
-        QApplication.clipboard().setText(self._message_for(e, link))
-        _flash(button)
-
-    def _copy_all(self):
-        entries = build_share_entries(self.root)
-        links = self._links()
-        parts, missing = [], 0
-        for e in entries:
-            link = self._link_edits[e["name"]].text().strip() if e["name"] in self._link_edits else links.get(e["name"], "")
-            if not link:
-                missing += 1
-                continue
-            parts.append(f"— {e['name']} —\n{self._message_for(e, link)}")
-        if not parts:
-            self.share_status.setText("Hiçbir oyuncuya link girilmemiş.")
-            return
-        QApplication.clipboard().setText("\n\n".join(parts))
-        self.share_status.setText(f"{len(parts)} mesaj kopyalandı" + (f" · {missing} oyuncuda link eksik" if missing else ""))
-
-    def _export_csv(self):
-        if not self.root:
-            return
-        entries = build_share_entries(self.root)
-        links = self._links()
-        path = os.path.join(self.root, "Paylasim_Listesi.csv")
-        try:
-            with open(path, "w", newline="", encoding="utf-8-sig") as f:
-                w = csv.writer(f, delimiter=";")
-                w.writerow(["Oyuncu", "Fotoğraf", "Seçilen", "Link", "Mesaj"])
-                for e in entries:
-                    link = links.get(e["name"], "")
-                    w.writerow([e["name"], e["count"], e["best"], link, self._message_for(e, link) if link else ""])
-            self.share_status.setText(f"Kaydedildi: {os.path.basename(path)}")
+    def _open_selection(self):
+        path = os.path.join(self.root, SELECTION_FOLDER_NAME) if self.root else ""
+        if path and os.path.isdir(path):
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        except Exception as ex:
-            QMessageBox.warning(self, "Kaydedilemedi", str(ex))
-
-    def _open_root(self):
-        if self.root:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(self.root))
+        else:
+            self.sel_status.setText("Bu klasörde henüz SECILENLER yok.")
 
     def _make_selections(self):
         if not self.root:
-            self.share_status.setText("Önce çıktı klasörü seç.")
+            self.sel_status.setText("Önce çıktı klasörü seç.")
             return
         if not os.path.isfile(os.path.join(self.root, "Rapor.csv")):
             QMessageBox.information(self, "Rapor yok", "Bu klasörde Rapor.csv yok; seçim yapılamaz.")
@@ -4022,8 +3851,8 @@ class SharePage(QWidget):
             made = build_selections(self.root, n)
         finally:
             QApplication.restoreOverrideCursor()
-        self.share_status.setText(f"{made} fotoğraf seçildi (oyuncu başına en fazla {n}).")
-        self._refresh_share()
+        self.sel_status.setText(f"{made} fotoğraf seçildi (oyuncu başına en fazla {n}).")
+        self._refresh_social_summary()
 
     # ---------------------------------------------------------------- 2) İçerik dengesi
     def _build_balance_tab(self) -> QWidget:
@@ -4116,6 +3945,7 @@ class SharePage(QWidget):
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(16)
+        lay.addWidget(self._build_selection_card())
         card, c = self.win._card(margins=(20, 18, 20, 16), spacing=14)
 
         c.addWidget(self.win._section_label("Kaynak fotoğraflar"))
@@ -4276,7 +4106,7 @@ class SharePage(QWidget):
         jobs = self._social_jobs()
         nf = len(s["formats"])
         if s["source"] == "Seçilenler" and not jobs:
-            self.social_summary.setText("SECILENLER klasörü boş. Paylaşım sekmesinde 'Seçilenleri oluştur'a bas ya da kaynağı değiştir.")
+            self.social_summary.setText("SECILENLER klasörü boş. Yukarıdan 'Seçilenleri oluştur'a bas ya da kaynağı değiştir.")
         else:
             self.social_summary.setText(f"{len(jobs)} fotoğraf × {nf} boyut = {len(jobs) * nf} görsel")
 
@@ -4441,7 +4271,7 @@ class MatchdayDialog(QDialog):
         cb.toggled.connect(lambda c, i=item_id: self._toggle(i, c))
         row.addWidget(cb, 1)
         if action:
-            label = {"extract": "Ayıklamaya git", "review": "İncelemeye git", "share": "Paylaşıma git"}[action]
+            label = {"extract": "Ayıklamaya git", "review": "İncelemeye git", "share": "Sosyal medyaya git"}[action]
             page = {"extract": PAGE_EXTRACT, "review": PAGE_REVIEW, "share": PAGE_SHARE}[action]
             b = QPushButton(label)
             b.setObjectName("linkBtn")
@@ -5028,7 +4858,7 @@ class MainWindow(QMainWindow):
         nav_layout.setContentsMargins(0, 0, 0, 0)
         nav_layout.setSpacing(2)
         for index, (icon_name, label) in enumerate((
-                ("home", "Ana Sayfa"), ("image", "Ayıklama"), ("check", "İnceleme"), ("share", "Paylaşım"),
+                ("home", "Ana Sayfa"), ("image", "Ayıklama"), ("check", "İnceleme"), ("share", "Sosyal"),
                 ("trophy", "Maçlar"), ("gift", "Doğum"), ("megaphone", "Basın"), ("report", "Raporlar"),
                 ("sliders", "Ayarlar"))):
             btn = QToolButton()
@@ -6197,11 +6027,11 @@ class MainWindow(QMainWindow):
             review_btn.setEnabled(bool(folder) and os.path.isfile(os.path.join(folder, "Rapor.csv")))
             review_btn.setToolTip("Karışık ve düşük güvenli eşleşmeleri tek tek onayla / düzelt")
             review_btn.clicked.connect(lambda checked=False, p=folder: (self.set_work_folder(p), self._go_to(PAGE_REVIEW)))
-            share_btn = QPushButton("Paylaş")
+            share_btn = QPushButton("Sosyal")
             share_btn.setObjectName("outlineSmall")
             share_btn.setFixedHeight(32)
             share_btn.setEnabled(bool(folder) and os.path.isdir(folder))
-            share_btn.setToolTip("Drive linkleri, mesajlar, içerik dengesi ve sosyal medya boyutları")
+            share_btn.setToolTip("Sosyal medya boyutları + logo ve içerik dengesi")
             share_btn.clicked.connect(lambda checked=False, p=folder: (self.set_work_folder(p), self._go_to(PAGE_SHARE)))
             row_layout.addWidget(review_btn)
             row_layout.addWidget(share_btn)
@@ -6609,7 +6439,7 @@ class MainWindow(QMainWindow):
         review_btn = None
         if stats.get("karisik", 0) > 0 and output_folder:
             review_btn = box.addButton(f"Karışık {stats['karisik']} fotoğrafı incele", QMessageBox.ButtonRole.AcceptRole)
-        share_btn = box.addButton("Paylaşıma geç", QMessageBox.ButtonRole.ActionRole) if output_folder else None
+        share_btn = box.addButton("Sosyal medyaya geç", QMessageBox.ButtonRole.ActionRole) if output_folder else None
         box.addButton("Tamam", QMessageBox.ButtonRole.RejectRole)
         box.exec()
         clicked = box.clickedButton()
