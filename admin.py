@@ -64,6 +64,33 @@ def name_slug(text: str) -> str:
     return slug.strip("_")
 
 
+def pick_photo_entry(full_slug: str, entries: list):
+    """entries: [(dosya_slug, öğe)]. Yalnız TAM kelime eşleşmesi: "onur" dosyası "Onurcan Piri"ye düşmez.
+    Öncelik: tam ad > aynı kelime kümesi > dosya adı ismin kelimelerinden biri/birkaçı > dosyada fazladan kelime var."""
+    nset = {t for t in full_slug.split("_") if t}
+    best, best_score = None, 0
+    for slug, item in entries:
+        if not slug:
+            continue
+        if slug == full_slug:
+            score = 1000
+        else:
+            fset = {t for t in slug.split("_") if t}
+            if not fset:
+                continue
+            if fset == nset:
+                score = 900
+            elif fset <= nset:
+                score = 500 + len(fset)
+            elif nset and nset <= fset:
+                score = 600 - len(fset)
+            else:
+                continue
+        if score > best_score:
+            best, best_score = item, score
+    return best
+
+
 def _find_in_dirs(dirnames, extra_detect_word, name: str):
     slug = name_slug(name)
     candidate_dirs = []
@@ -87,24 +114,16 @@ def _find_in_dirs(dirnames, extra_detect_word, name: str):
             if cand.is_file():
                 return cand
 
-    tokens = [name_slug(t) for t in name.split() if len(t) >= 3]
-    best, best_len = None, -1
+    found = []
     for folder in candidate_dirs:
         try:
             entries = list(folder.iterdir())
         except OSError:
             continue
         for entry in entries:
-            if not entry.is_file() or entry.suffix.lower().lstrip(".") not in _IMG_EXTS:
-                continue
-            file_slug = name_slug(entry.stem)
-            if not file_slug:
-                continue
-            matched = (file_slug == slug or file_slug in slug or slug in file_slug
-                       or file_slug in tokens or any(len(tok) >= 4 and tok in file_slug for tok in tokens))
-            if matched and len(file_slug) > best_len:
-                best, best_len = entry, len(file_slug)
-    return best
+            if entry.is_file() and entry.suffix.lower().lstrip(".") in _IMG_EXTS:
+                found.append((name_slug(entry.stem), entry))
+    return pick_photo_entry(slug, found)
 
 
 def _write_dir(dirnames, extra_detect_word):

@@ -1670,10 +1670,36 @@ def _name_slug(text: str) -> str:
     return team_logo_slug(text)
 
 
+def pick_photo_entry(full_slug: str, entries: list):
+    """entries: [(dosya_slug, öğe)]. Yalnız TAM kelime eşleşmesi: "onur" dosyası "Onurcan Piri"ye düşmez.
+    Öncelik: tam ad > aynı kelime kümesi > dosya adı ismin kelimelerinden biri/birkaçı > dosyada fazladan kelime var."""
+    nset = {t for t in full_slug.split("_") if t}
+    best, best_score = None, 0
+    for slug, item in entries:
+        if not slug:
+            continue
+        if slug == full_slug:
+            score = 1000
+        else:
+            fset = {t for t in slug.split("_") if t}
+            if not fset:
+                continue
+            if fset == nset:
+                score = 900
+            elif fset <= nset:
+                score = 500 + len(fset)
+            elif nset and nset <= fset:
+                score = 600 - len(fset)
+            else:
+                continue
+        if score > best_score:
+            best, best_score = item, score
+    return best
+
+
 def player_photo_source_path(name: str):
     app_dir = Path(__file__).resolve().parent
     full_slug = _name_slug(name)
-    tokens = [_name_slug(t) for t in name.split() if len(t) >= 3]
 
     candidate_dirs = []
     for dirname in PLAYER_PHOTOS_DIRNAMES:
@@ -1697,32 +1723,17 @@ def player_photo_source_path(name: str):
             if candidate.is_file():
                 return candidate
 
-    # 2) Esnek eşleşme: dosya adını da sadeleştirip tam isimle ya da ad/soyad parçalarıyla
-    #    karşılaştır.
-    best, best_len = None, -1
+    # 2) Esnek eşleşme (yalnız tam kelime): "onur.png" Onur Öztonga'ya gider, Onurcan Piri'ye değil
+    entries = []
     for folder in candidate_dirs:
         try:
-            entries = list(folder.iterdir())
+            files = list(folder.iterdir())
         except OSError:
             continue
-        for entry in entries:
-            if not entry.is_file() or entry.suffix.lower().lstrip(".") not in (
-                "png", "jpg", "jpeg", "webp"
-            ):
-                continue
-            file_slug = _name_slug(entry.stem)
-            if not file_slug:
-                continue
-            matched = (
-                file_slug == full_slug
-                or file_slug in full_slug
-                or full_slug in file_slug
-                or file_slug in tokens
-                or any(len(tok) >= 4 and tok in file_slug for tok in tokens)
-            )
-            if matched and len(file_slug) > best_len:
-                best, best_len = entry, len(file_slug)
-    return best
+        for entry in files:
+            if entry.is_file() and entry.suffix.lower().lstrip(".") in ("png", "jpg", "jpeg", "webp"):
+                entries.append((_name_slug(entry.stem), entry))
+    return pick_photo_entry(full_slug, entries)
 
 
 def _circular_pixmap(raw: QPixmap, size: int) -> "QPixmap | None":
