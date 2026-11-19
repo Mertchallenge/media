@@ -4165,37 +4165,6 @@ class MainWindow(QMainWindow):
         a_layout.addWidget(self.settings_status)
         layout.addWidget(ai_card)
 
-        theme_card, t_layout = self._card(spacing=14)
-        t_head = QHBoxLayout()
-        t_head.setSpacing(10)
-        t_head.addWidget(self._icon_label("sliders", K_GREEN_HI, 18))
-        t_head.addWidget(self._section_label("Görünüm"))
-        t_head.addStretch(1)
-        t_layout.addLayout(t_head)
-        t_note = QLabel("Renk temasını seç. Değişiklik uygulama yeniden açılınca geçerli olur.")
-        t_note.setObjectName("noteText")
-        t_note.setWordWrap(True)
-        t_layout.addWidget(t_note)
-        theme_row = QHBoxLayout()
-        theme_row.setSpacing(10)
-        self.theme_group = QButtonGroup(self)
-        self.theme_group.setExclusive(True)
-        self.theme_buttons: dict[str, QPushButton] = {}
-        current_theme = load_config().get("theme", "gece")
-        for tkey, tname in THEME_NAMES.items():
-            btn = QPushButton(f"{tname} · {THEME_HINTS[tkey]}")
-            btn.setObjectName("segBtn")
-            btn.setCheckable(True)
-            btn.setChecked(tkey == current_theme)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(lambda checked=False, k=tkey: self._choose_theme(k))
-            self.theme_group.addButton(btn)
-            self.theme_buttons[tkey] = btn
-            theme_row.addWidget(btn)
-        theme_row.addStretch(1)
-        t_layout.addLayout(theme_row)
-        layout.addWidget(theme_card)
-
         about, b_layout = self._card(spacing=8)
         b_layout.addWidget(self._section_label("Hakkında"))
         info = QLabel(
@@ -4242,26 +4211,6 @@ class MainWindow(QMainWindow):
                 cfg["ai_model"] = model_id
         save_config(cfg)
         self._set_settings_status("Kaydedildi.")
-
-    def _choose_theme(self, key: str):
-        cfg = load_config()
-        if cfg.get("theme") == key:
-            return
-        cfg["theme"] = key
-        save_config(cfg)
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle("Tema değişti")
-        box.setText(f"'{THEME_NAMES[key]}' teması kaydedildi.\nŞimdi yeniden başlatayım mı?")
-        yes = box.addButton("Şimdi yeniden başlat", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("Sonra", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() is yes:
-            try:
-                os.execv(sys.executable, [sys.executable] + sys.argv)
-            except Exception:
-                QMessageBox.information(self, "Yeniden başlat",
-                                        "Otomatik yeniden başlatılamadı. Uygulamayı kapatıp tekrar aç.")
 
     def _clear_api_key(self):
         self.api_key_edit.clear()
@@ -4719,20 +4668,36 @@ def _theme_map(name: str) -> dict:
     return base
 
 
+_K_ORIGINAL: dict = {}
+
+
 def apply_theme(name: str):
-    """K_* renk sabitlerini seçilen temaya çevirir. Pencereler kurulmadan ÖNCE çağrılmalıdır."""
+    """K_* renk sabitlerini seçilen temaya çevirir (her seferinde ORİJİNAL değerlerden hesaplanır,
+    bu yüzden çalışırken de değiştirilebilir). Yeni açılan pencereler yeni temayı kullanır."""
     global ACTIVE_THEME
+    g = globals()
+    if not _K_ORIGINAL:
+        for n in list(g):
+            if n.startswith("K_") and isinstance(g[n], str) and re.fullmatch(r"#[0-9A-Fa-f]{6}", g[n]):
+                _K_ORIGINAL[n] = g[n]
     if name not in THEMES:
         name = "gece"
     ACTIVE_THEME = name
     mapping = _theme_map(name)
-    if not mapping:
-        return
-    g = globals()
-    for const in [n for n in list(g) if n.startswith("K_") and isinstance(g[n], str)]:
-        value = g[const]
-        if re.fullmatch(r"#[0-9A-Fa-f]{6}", value) and value.upper() in mapping:
-            g[const] = mapping[value.upper()]
+    for const, original in _K_ORIGINAL.items():
+        g[const] = mapping.get(original.upper(), original)
+
+
+def build_app_palette() -> "QPalette":
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(K_BG))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(K_TEXT))
+    palette.setColor(QPalette.ColorRole.Base, QColor(K_CARD))
+    palette.setColor(QPalette.ColorRole.Text, QColor(K_TEXT))
+    palette.setColor(QPalette.ColorRole.Button, QColor(THEMES[ACTIVE_THEME].get("#1B2A22", "#1B2A22")))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(K_TEXT))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(K_GREEN))
+    return palette
 
 
 def apply_theme_to_css(css: str) -> str:
@@ -8601,6 +8566,7 @@ def hex_to_rgba(color: str, alpha: float) -> str:
 
 class LauncherWindow(UiKit, QMainWindow):
     department_chosen = pyqtSignal(str)
+    theme_requested = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -8659,6 +8625,8 @@ class LauncherWindow(UiKit, QMainWindow):
         pl.addWidget(self.date_label)
         pl.addWidget(dot)
         pl.addWidget(self.time_label)
+        header.addWidget(self._build_theme_switch())
+        header.addSpacing(10)
         header.addWidget(pill)
         outer.addLayout(header)
 
@@ -8717,6 +8685,28 @@ class LauncherWindow(UiKit, QMainWindow):
         inner = QWidget()
         inner.setLayout(layout)
         return self._scroll(inner)
+
+    def _build_theme_switch(self) -> QWidget:
+        """Başlıkta Gece / Orman / Gün Işığı seçici; seçim anında uygulanır ve kaydedilir."""
+        box = QFrame()
+        box.setObjectName("pill")
+        box.setFixedHeight(44)
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(6, 0, 6, 0)
+        lay.setSpacing(4)
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        for tkey, tname in THEME_NAMES.items():
+            btn = QPushButton(tname)
+            btn.setObjectName("segBtn")
+            btn.setCheckable(True)
+            btn.setChecked(tkey == ACTIVE_THEME)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(THEME_HINTS[tkey])
+            btn.clicked.connect(lambda checked=False, k=tkey: self.theme_requested.emit(k))
+            group.addButton(btn)
+            lay.addWidget(btn)
+        return box
 
     @staticmethod
     def _greeting() -> str:
@@ -8815,6 +8805,7 @@ class AppController(QObject):
         super().__init__()
         self.launcher = LauncherWindow()
         self.launcher.department_chosen.connect(self._on_chosen)
+        self.launcher.theme_requested.connect(self._on_theme)
         self.window = None
         self.shared = SharedStore()
         self.pins = PlayerPins()
@@ -8841,6 +8832,31 @@ class AppController(QObject):
         if window is not None:
             window.close()
             window.deleteLater()
+
+    def _on_theme(self, key: str):
+        """Temayı kaydeder, uygular ve giriş ekranını yeni renklerle yeniden kurar (yeniden başlatma yok)."""
+        cfg = load_config()
+        cfg["theme"] = key
+        save_config(cfg)
+        apply_theme(key)
+        app = QApplication.instance()
+        if app is not None:
+            app.setPalette(build_app_palette())
+        old = self.launcher
+        remember = old.remember_toggle.isChecked()
+        geometry = old.geometry()
+        new = LauncherWindow()
+        new.department_chosen.connect(self._on_chosen)
+        new.theme_requested.connect(self._on_theme)
+        new.set_remember(remember)
+        last = cfg.get("last_dept", "")
+        if last in VISIBLE_DEPARTMENTS:
+            new.set_last(last)
+        new.setGeometry(geometry)
+        self.launcher = new
+        new.show()
+        old.close()
+        old.deleteLater()
 
     def _on_chosen(self, key: str):
         cfg = load_config()
@@ -8948,14 +8964,7 @@ def main():
 
     apply_theme(load_config().get("theme", "gece"))   # pencereler kurulmadan önce
 
-    palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window, QColor(K_BG))
-    palette.setColor(QPalette.ColorRole.WindowText, QColor(K_TEXT))
-    palette.setColor(QPalette.ColorRole.Base, QColor(K_CARD))
-    palette.setColor(QPalette.ColorRole.Text, QColor(K_TEXT))
-    palette.setColor(QPalette.ColorRole.Button, QColor("#1B2A22"))
-    palette.setColor(QPalette.ColorRole.ButtonText, QColor(K_TEXT))
-    palette.setColor(QPalette.ColorRole.Highlight, QColor(K_GREEN))
+    palette = build_app_palette()
     app.setPalette(palette)
 
     controller = AppController()
