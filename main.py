@@ -175,6 +175,16 @@ def _update_ssl_context():
             return None
 
 
+def _verified_ssl_context():
+    """API anahtarı gönderilen bağlantılar için: certifi varsa onunla, yoksa sistemin varsayılanıyla DOĞRULAYARAK bağlan."""
+    try:
+        import ssl
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return None
+
+
 def _log_update_event(text: str):
     try:
         os.makedirs(os.path.dirname(UPDATE_LOG_PATH), exist_ok=True)
@@ -2453,7 +2463,7 @@ class AiCommentWorker(QThread):
                     "x-api-key": self.api_key,
                     "anthropic-version": "2023-06-01",
                 })
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=60, context=_verified_ssl_context()) as response:
                 data = json.loads(response.read().decode("utf-8"))
             text = "".join(block.get("text", "") for block in data.get("content", [])
                            if block.get("type") == "text").strip()
@@ -4011,7 +4021,7 @@ class NewsWorker(QThread):
         try:
             import urllib.request
             req = urllib.request.Request(NEWS_FEED_URL, headers={"User-Agent": "Mozilla/5.0 (MediaStaffKS)"})
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urllib.request.urlopen(req, timeout=15, context=_update_ssl_context()) as r:
                 data = r.read()
             self.done_signal.emit(parse_news_feed(data), "")
         except Exception as e:
