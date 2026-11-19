@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Yeni \"Program\" sayfası: haftalık antrenman / yemek / kamp / maç günü programı (15–24 Kasım eklendi)."
+UPDATE_NOTES = "Ana sayfaya \"Bugünün programı\" kartı eklendi."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -5801,6 +5801,7 @@ class MainWindow(QMainWindow):
         self.page_title.setText(title)
         self.page_sub.setText(sub)
         if index == PAGE_HOME:
+            self._refresh_today_program()
             self.ig_panel.ensure()
             self.news_panel.refresh_if_stale()
         elif index == PAGE_REVIEW:
@@ -5858,6 +5859,22 @@ class MainWindow(QMainWindow):
         mid.addWidget(self.next_card, 1)
         mid.addWidget(self._build_birthday_card(), 1)
         layout.addLayout(mid)
+
+        prog_card, p_layout = self._card(spacing=8)
+        p_head = QHBoxLayout()
+        self.today_prog_label = self._section_label("Bugünün programı")
+        p_head.addWidget(self.today_prog_label)
+        p_head.addStretch(1)
+        prog_all = QPushButton("Haftalık program ›")
+        prog_all.setObjectName("linkBtn")
+        prog_all.setCursor(Qt.CursorShape.PointingHandCursor)
+        prog_all.clicked.connect(lambda: self._go_to(PAGE_PROGRAM))
+        p_head.addWidget(prog_all)
+        p_layout.addLayout(p_head)
+        self.today_prog_rows = QVBoxLayout()
+        self.today_prog_rows.setSpacing(6)
+        p_layout.addLayout(self.today_prog_rows)
+        layout.addWidget(prog_card)
 
         track, t_layout = self._card(spacing=10, clickable=True)
         track.clicked.connect(self._share_history)
@@ -6307,6 +6324,7 @@ class MainWindow(QMainWindow):
         self._refresh_next_match()
         self._refresh_fixture_rows()
         self._refresh_birthday_rows()
+        self._refresh_today_program()
 
     def _refresh_next_match(self):
         clear_layout(self.next_layout)
@@ -6805,6 +6823,41 @@ class MainWindow(QMainWindow):
         if PROGRAMS and self.prog_index is not None:
             self.prog_index = max(0, min(len(PROGRAMS) - 1, self.prog_index + delta))
             self._refresh_program_page(keep_index=True)
+
+    def _refresh_today_program(self):
+        """Ana sayfadaki kart: yalnızca BUGÜNÜN programı."""
+        if not hasattr(self, "today_prog_rows"):
+            return
+        clear_layout(self.today_prog_rows)
+        today_iso = date.today().isoformat()
+        items, subtitle = [], ""
+        for pr in PROGRAMS:
+            todays = [i for i in pr["items"] if i["date"] == today_iso]
+            if todays:
+                items, subtitle = sorted(todays, key=lambda i: i.get("time") or "99:99"), pr.get("subtitle", "")
+                break
+        self.today_prog_label.setText(turkish_upper(f"Bugünün programı · {subtitle}" if subtitle else "Bugünün programı"))
+        if not items:
+            hint = QLabel("Bugün için program eklenmedi.")
+            hint.setObjectName("emptyHint")
+            self.today_prog_rows.addWidget(hint)
+            return
+        for it in items:
+            fg, bg, bd = self.PROGRAM_KIND_STYLE.get(it.get("kind", "meal"), self.PROGRAM_KIND_STYLE["meal"])
+            row = QFrame()
+            row.setObjectName("progRow")
+            row.setStyleSheet(f"QFrame#progRow {{ background: {bg}; border: 1px solid {bd}; border-radius: 10px; }}")
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(12, 7, 12, 7)
+            rl.setSpacing(14)
+            t = QLabel(it.get("time") or "Gün boyu")
+            t.setFixedWidth(64)
+            t.setStyleSheet(f"color: {fg}; font-weight: 700; background: transparent; border: none;")
+            n = QLabel(it.get("title", ""))
+            n.setStyleSheet(f"color: {K_TEXT}; background: transparent; border: none;")
+            rl.addWidget(t)
+            rl.addWidget(n, 1)
+            self.today_prog_rows.addWidget(row)
 
     def _refresh_program_page(self, keep_index: bool = False):
         clear_layout(self.prog_cols)
