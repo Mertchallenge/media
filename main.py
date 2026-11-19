@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Uygulama içi güncelleme: artık yeniden derlemeden, tek tıkla güncellenir."
+UPDATE_NOTES = "Güncelleme testi: bu pencere çıktıysa uygulama içi güncelleme çalışıyor."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
