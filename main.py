@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.5.4"
+APP_VERSION = "1.5.5"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "iPhone widget: tek renk/renkli ana ekran modunda satırlar yazıyı yutmasın."
+UPDATE_NOTES = "Daha sağlam: beklenmeyen hatada uygulama çökmez, veriler güvenli yazılır, her gün otomatik yedek alınır (Ayarlar → Yedekler klasörü)."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -1152,23 +1152,96 @@ AI_MODELS = [
 ]
 
 
-def read_json(path: str, default):
+ERROR_LOG_PATH = os.path.join(APP_DIR, "hata.log")
+BACKUP_DIR = os.path.join(str(ks_data.user_data_dir()), "Yedekler")
+
+
+def log_error(text: str):
+    """Hataları ~/.kocaelispor_foto_ayiklama/hata.log dosyasına yazar (1 MB'ı geçince eskiyi ayırır). Asla hata fırlatmaz."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default
+        os.makedirs(APP_DIR, exist_ok=True)
+        if os.path.exists(ERROR_LOG_PATH) and os.path.getsize(ERROR_LOG_PATH) > 1_000_000:
+            os.replace(ERROR_LOG_PATH, ERROR_LOG_PATH + ".eski")
+        with open(ERROR_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(f"\n--- {datetime.now().isoformat(timespec='seconds')} (v{APP_VERSION}) ---\n{text}\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def read_json(path: str, default):
+    """JSON okur. Dosya bozuksa kenara alır (.bozuk-...) ve son iyi kopyayı (.bak) geri yükler; yoksa default döner."""
+    for candidate, is_backup in ((path, False), (path + ".bak", True)):
+        if not os.path.exists(candidate):
+            continue
+        try:
+            with open(candidate, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:  # noqa: BLE001
+            if not is_backup:
+                try:
+                    os.replace(path, f"{path}.bozuk-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+                except OSError:
+                    pass
+                log_error(f"Bozuk dosya kenara alındı: {path}\n{e!r}")
+            continue
+        if is_backup:
+            try:
+                shutil.copy2(candidate, path)
+                log_error(f"{path} son iyi kopyadan (.bak) geri yüklendi.")
+            except OSError:
+                pass
+        return data
+    return default
 
 
 def write_json(path: str, data, private: bool = False):
+    """Atomik yazar (önce .tmp, sonra yer değiştirir) ve bir önceki sağlam sürümü .bak olarak saklar."""
+    tmp = path + ".tmp"
     try:
-        os.makedirs(APP_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
         if private:
-            os.chmod(path, 0o600)  # API anahtarı gibi bilgiler yalnızca bu kullanıcıya açık olsun
-    except Exception:
-        pass
+            os.chmod(tmp, 0o600)  # API anahtarı gibi bilgiler yalnızca bu kullanıcıya açık olsun
+        if os.path.exists(path):
+            try:
+                if os.path.getsize(path) < 5_000_000:
+                    with open(path, "r", encoding="utf-8") as cur:
+                        json.load(cur)            # mevcut dosya sağlamsa yedeğe al; bozuksa iyi yedeği ezme
+                    shutil.copy2(path, path + ".bak")
+            except Exception:  # noqa: BLE001
+                pass
+        os.replace(tmp, path)
+    except Exception as e:  # noqa: BLE001
+        log_error(f"JSON yazılamadı: {path}\n{e!r}")
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def daily_backup(keep_days: int = 14) -> int:
+    """Günde bir kez (o günün ilk açılışında) veri dosyalarının kopyasını Yedekler/<tarih>/ altına alır, 14 günden eskiyi siler.
+    Kopyalanan dosya sayısını döndürür (bugünün yedeği zaten varsa 0)."""
+    try:
+        dest = os.path.join(BACKUP_DIR, date.today().isoformat())
+        if os.path.isdir(dest):
+            return 0
+        os.makedirs(dest, exist_ok=True)
+        n = 0
+        for f in (str(ks_data.DATA_PATH), SHARE_LOG_PATH, MEDYA_EXTRA_PATH, HISTORY_PATH):
+            if os.path.isfile(f):
+                shutil.copy2(f, os.path.join(dest, os.path.basename(f)))
+                n += 1
+        days = sorted(d for d in os.listdir(BACKUP_DIR) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d))
+        for d in days[:-keep_days]:
+            shutil.rmtree(os.path.join(BACKUP_DIR, d), ignore_errors=True)
+        return n
+    except Exception as e:  # noqa: BLE001
+        log_error(f"Günlük yedek alınamadı: {e!r}")
+        return 0
 
 
 def load_config() -> dict:
@@ -7606,6 +7679,14 @@ class MainWindow(QMainWindow):
     # ==================================================================
     # SAYFA 5 — AYARLAR
     # ==================================================================
+    def _open_backup_dir(self):
+        """Günlük otomatik yedeklerin (son 14 gün) durduğu klasörü Finder'da açar."""
+        try:
+            os.makedirs(BACKUP_DIR, exist_ok=True)
+        except OSError:
+            pass
+        QDesktopServices.openUrl(QUrl.fromLocalFile(BACKUP_DIR))
+
     def _open_user_data_dir(self):
         """Oyuncu fotoğrafları, takım logoları ve veri.json'un durduğu klasörü Finder'da açar."""
         d = ks_data.user_data_dir()
@@ -7717,6 +7798,12 @@ class MainWindow(QMainWindow):
         open_data_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_data_btn.clicked.connect(self._open_user_data_dir)
         b_layout.addWidget(open_data_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        bak_btn = QPushButton("Yedekler klasörünü aç")
+        bak_btn.setObjectName("ghostBtn")
+        bak_btn.setFixedHeight(38)
+        bak_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        bak_btn.clicked.connect(self._open_backup_dir)
+        b_layout.addWidget(bak_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         upd_btn = QPushButton("Güncellemeyi denetle")
         upd_btn.setObjectName("ghostBtn")
         upd_btn.setFixedHeight(38)
@@ -13242,6 +13329,7 @@ class AppController(QObject):
         self.pins = PlayerPins()
 
     def start(self):
+        daily_backup()
         cfg = load_config()
         key = cfg.get("last_dept", "")
         self.launcher.set_remember(bool(cfg.get("remember_dept")))
@@ -13437,9 +13525,61 @@ def run_selftest() -> int:
     return 1 if problems else 0
 
 
+_ERR_NOTICE = {"sig": "", "t": 0.0, "open": False}
+
+
+def _show_error_notice():
+    if _ERR_NOTICE["open"]:
+        return
+    try:
+        _ERR_NOTICE["open"] = True
+        box = QMessageBox(QApplication.activeWindow())
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Beklenmeyen hata")
+        box.setText("Bir şey ters gitti ama uygulama açık kalıyor.")
+        box.setInformativeText("Ayrıntı hata kaydına yazıldı (~/.kocaelispor_foto_ayiklama/hata.log). "
+                               "Sorun tekrar ederse bu dosyayı bana gönder.")
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        box.destroyed.connect(lambda *_: _ERR_NOTICE.update(open=False))
+        box.open()
+    except Exception:  # noqa: BLE001
+        _ERR_NOTICE["open"] = False
+
+
+def _global_excepthook(exc_type, exc, tb):
+    """Yakalanmamış hata: PyQt6 normalde uygulamayı çökertir. Kaydet, kullanıcıya tek sakin uyarı göster, çalışmaya devam et."""
+    import traceback
+    text = "".join(traceback.format_exception(exc_type, exc, tb))
+    print(text, file=sys.stderr)
+    if issubclass(exc_type, KeyboardInterrupt):
+        return
+    log_error(text)
+    try:
+        sig = f"{exc_type.__name__}:{exc}"[:200]
+        now = time.time()
+        if sig == _ERR_NOTICE["sig"] and now - _ERR_NOTICE["t"] < 600:
+            return   # aynı hata için 10 dk içinde ikinci uyarı gösterme
+        _ERR_NOTICE.update(sig=sig, t=now)
+        QTimer.singleShot(0, _show_error_notice)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _install_error_hooks():
+    sys.excepthook = _global_excepthook
+    try:
+        import threading
+        threading.excepthook = lambda args: log_error(
+            "Arka plan iş parçacığı hatası:\n" + "".join(__import__("traceback").format_exception(
+                args.exc_type, args.exc_value, args.exc_traceback)))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main():
     if "--selftest" in sys.argv:
         sys.exit(run_selftest())
+    _install_error_hooks()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     load_local_fonts()

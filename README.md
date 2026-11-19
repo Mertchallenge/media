@@ -117,3 +117,11 @@ uygulaması ve iCloud Drive kullanılır.
 
 Veri, Mac'teki uygulama her açılıp yenilendiğinde güncellenir; iPhone widget'ı iOS'un belirlediği
 aralıklarla (genelde 15+ dk) tazelenir.
+
+
+## Dayanıklılık (v1.5.5)
+
+- Beklenmeyen bir hata uygulamayı çökertmez; `~/.kocaelispor_foto_ayiklama/hata.log` dosyasına yazılır ve tek bir uyarı gösterilir.
+- Ayar/kayıt dosyaları önce geçici dosyaya yazılıp yer değiştirilir; bir önceki sağlam sürüm `.bak` olarak kalır.
+  Dosya bozulursa kenara alınır (`.bozuk-…`) ve `.bak` geri yüklenir.
+- Her günün ilk açılışında veri dosyaları `Yedekler/<tarih>/` altına kopyalanır (son 14 gün). Ayarlar → *Yedekler klasörünü aç*.
