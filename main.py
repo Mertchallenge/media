@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Fikstür artık Transfermarkt'tan otomatik güncelleniyor (TFF okuyucusu kaldırıldı, hatalı kayıtlar temizlenir)."
+UPDATE_NOTES = "Yeni \"Program\" sayfası: haftalık antrenman / yemek / kamp / maç günü programı (15–24 Kasım eklendi)."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -287,6 +287,7 @@ MANUAL_FIXTURES = _SHARED_DATA["fixtures"]
 _PLAYERS_DATA = _SHARED_DATA["players"]
 MANUAL_BIRTHDAYS = [{"name": p["name"], "date": p["dob"]} for p in _PLAYERS_DATA if p.get("dob")]
 PRESS_WEEKS = _SHARED_DATA["press"]
+PROGRAMS = _SHARED_DATA["programs"]
 
 
 # ==========================================================================================
@@ -2556,9 +2557,10 @@ PAGE_META = [
     ("Basın Günleri", "Hangi oyuncunun hangi hafta röportaj aldığının takvimi"),
     ("Raporlar", "Geçmiş ayıklama işlemleri"),
     ("Ayarlar", "Yapay zekâ ve uygulama ayarları"),
+    ("Haftalık Program", "Antrenman, yemek, kamp ve maç günü akışı"),
 ]
 (PAGE_HOME, PAGE_EXTRACT, PAGE_REVIEW, PAGE_SHARE, PAGE_MATCHES, PAGE_BIRTHDAYS, PAGE_PRESS,
- PAGE_REPORTS, PAGE_SETTINGS) = range(9)
+ PAGE_REPORTS, PAGE_SETTINGS, PAGE_PROGRAM) = range(10)
 
 
 # ==========================================================================================
@@ -5650,6 +5652,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._build_press_page())       # PAGE_PRESS
         self.stack.addWidget(self._build_reports_page())     # PAGE_REPORTS
         self.stack.addWidget(self._build_settings_page())    # PAGE_SETTINGS
+        self.stack.addWidget(self._build_program_page())     # PAGE_PROGRAM
         content.addWidget(self.stack, 1)
         outer.addLayout(content, 1)
 
@@ -5674,6 +5677,7 @@ class MainWindow(QMainWindow):
         for index, (icon_name, label) in (
                 (PAGE_HOME, ("home", "Ana Sayfa")), (PAGE_EXTRACT, ("image", "Ayıklama")),
                 (PAGE_SHARE, ("share", "Sosyal")), (PAGE_MATCHES, ("trophy", "Maçlar")),
+                (PAGE_PROGRAM, ("calendar", "Program")),
                 (PAGE_BIRTHDAYS, ("gift", "Doğum")), (PAGE_PRESS, ("megaphone", "Basın")),
                 (PAGE_REPORTS, ("report", "Raporlar")), (PAGE_SETTINGS, ("sliders", "Ayarlar"))):
             btn = QToolButton()
@@ -5813,6 +5817,8 @@ class MainWindow(QMainWindow):
             self._refresh_reports_page()
         elif index == PAGE_SETTINGS:
             self._load_settings_fields()
+        elif index == PAGE_PROGRAM:
+            self._refresh_program_page()
 
     # ==================================================================
     # SAYFA 1 — ANA SAYFA (genel bakış: sıradaki maç, fikstür, doğum günleri)
@@ -6744,6 +6750,138 @@ class MainWindow(QMainWindow):
             row_layout.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
             self.bd_rows_layout.addWidget(row)
         self.bd_rows_layout.addStretch(1)
+
+    # ==================================================================
+    # HAFTALIK PROGRAM (kulübün antrenman / yemek / kamp / maç günü programı)
+    # ==================================================================
+    PROGRAM_KIND_STYLE = {          # tür -> (yazı rengi, arka plan, kenarlık)
+        "training": (K_RED_HI, K_RED_BG, "#5A2A2D"), "gym": (K_GREEN_HI, K_GREEN_BG, "#1E4A36"),
+        "meal": (K_SOFT, "#1B2420", K_LINE), "match": (K_BLUE, K_BLUE_BG, "#2C4A7A"),
+        "meeting": (K_AMBER, K_AMBER_BG, "#5A4720"), "camp": (K_AMBER, K_AMBER_BG, "#5A4720"),
+        "off": (K_GREEN_HI, "#0E2A1F", "#1E4A36"),
+    }
+
+    def _build_program_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        self.prog_title = QLabel("")
+        self.prog_title.setObjectName("rowTitle")
+        head.addWidget(self.prog_title, 1)
+        self.prog_prev = QPushButton("‹ Önceki")
+        self.prog_next = QPushButton("Sonraki ›")
+        for b in (self.prog_prev, self.prog_next):
+            b.setObjectName("ghostBtn")
+            b.setFixedHeight(34)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            head.addWidget(b)
+        self.prog_prev.clicked.connect(lambda: self._shift_program(-1))
+        self.prog_next.clicked.connect(lambda: self._shift_program(1))
+        layout.addLayout(head)
+        inner = QWidget()
+        self.prog_cols = QHBoxLayout(inner)
+        self.prog_cols.setContentsMargins(0, 0, 0, 0)
+        self.prog_cols.setSpacing(10)
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.Shape.NoFrame)
+        area.setWidget(inner)
+        layout.addWidget(area, 1)
+        self.prog_index = None
+        return page
+
+    def _program_default_index(self) -> int:
+        today = date.today().isoformat()
+        for i, pr in enumerate(PROGRAMS):
+            if pr["start"] <= today <= pr.get("end", pr["start"]):
+                return i
+        later = [i for i, pr in enumerate(PROGRAMS) if pr["start"] > today]
+        return later[0] if later else len(PROGRAMS) - 1
+
+    def _shift_program(self, delta: int):
+        if PROGRAMS and self.prog_index is not None:
+            self.prog_index = max(0, min(len(PROGRAMS) - 1, self.prog_index + delta))
+            self._refresh_program_page(keep_index=True)
+
+    def _refresh_program_page(self, keep_index: bool = False):
+        clear_layout(self.prog_cols)
+        if not PROGRAMS:
+            self.prog_title.setText("")
+            self.prog_prev.setEnabled(False)
+            self.prog_next.setEnabled(False)
+            empty = QLabel("Henüz haftalık program eklenmedi.")
+            empty.setObjectName("emptyHint")
+            self.prog_cols.addWidget(empty)
+            return
+        if not keep_index or self.prog_index is None:
+            self.prog_index = self._program_default_index()
+        pr = PROGRAMS[self.prog_index]
+        self.prog_prev.setEnabled(self.prog_index > 0)
+        self.prog_next.setEnabled(self.prog_index < len(PROGRAMS) - 1)
+
+        def dm(iso):
+            d = date.fromisoformat(iso)
+            return f"{d.day:02d}.{d.month:02d}"
+        end = pr.get("end", pr["start"])
+        bits = [pr.get("title", "Program"), pr.get("subtitle", "")]
+        if pr.get("coach"):
+            bits.append(f"{pr['coach']} · Teknik Direktör")
+        bits.append(f"{dm(pr['start'])} – {dm(end)}.{date.fromisoformat(end).year}")
+        self.prog_title.setText("  ·  ".join(b for b in bits if b))
+
+        by_day = {}
+        for it in pr["items"]:
+            by_day.setdefault(it["date"], []).append(it)
+        today_iso = date.today().isoformat()
+        day = date.fromisoformat(pr["start"])
+        last = date.fromisoformat(end)
+        while day <= last:
+            iso = day.isoformat()
+            items = sorted(by_day.get(iso, []), key=lambda i: i.get("time") or "99:99")
+            is_off = any(i.get("kind") == "off" for i in items)
+            col = QFrame()
+            col.setObjectName("progCol")
+            col.setMinimumWidth(150)
+            col.setStyleSheet(f"QFrame#progCol {{ background: {K_CARD}; border-radius: 14px; "
+                              f"border: 1px solid {K_GREEN if iso == today_iso else K_LINE}; }}")
+            lay = QVBoxLayout(col)
+            lay.setContentsMargins(10, 10, 10, 10)
+            lay.setSpacing(8)
+            title = QLabel(f"{DAYS_TR[day.weekday()]}\n{day.day:02d}.{day.month:02d}.{day.year}")
+            title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            title.setStyleSheet(f"color: {K_GREEN_HI if iso == today_iso else K_TEXT}; font-weight: 700; "
+                                "background: transparent; border: none;")
+            lay.addWidget(title)
+            if is_off:
+                fg, bg, bd = self.PROGRAM_KIND_STYLE["off"]
+                off = QLabel("İZİN\nOFF")
+                off.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                off.setStyleSheet(f"color: {fg}; background: {bg}; border: 1px solid {bd}; border-radius: 10px; "
+                                  "font-weight: 700; padding: 18px 6px;")
+                lay.addWidget(off, 1)
+            else:
+                for it in items:
+                    fg, bg, bd = self.PROGRAM_KIND_STYLE.get(it.get("kind", "meal"), self.PROGRAM_KIND_STYLE["meal"])
+                    cell = QFrame()
+                    cell.setObjectName("progCell")
+                    cell.setStyleSheet(f"QFrame#progCell {{ background: {bg}; border: 1px solid {bd}; border-radius: 10px; }}")
+                    cl = QVBoxLayout(cell)
+                    cl.setContentsMargins(8, 6, 8, 8)
+                    cl.setSpacing(2)
+                    t = QLabel(it.get("time") or "—")
+                    t.setStyleSheet(f"color: {fg}; font-weight: 700; background: transparent; border: none;")
+                    n = QLabel(it.get("title", ""))
+                    n.setWordWrap(True)
+                    n.setStyleSheet(f"color: {K_TEXT}; background: transparent; border: none;")
+                    cl.addWidget(t)
+                    cl.addWidget(n)
+                    lay.addWidget(cell)
+                lay.addStretch(1)
+            self.prog_cols.addWidget(col, 1)
+            day += timedelta(days=1)
 
     # ==================================================================
     # SAYFA 3b — BASIN GÜNLERİ (röportaj takvimi: kim hangi hafta röportaj aldı)

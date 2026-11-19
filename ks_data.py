@@ -95,6 +95,32 @@ DEFAULT_FIXTURES = [
     {"home": "Gençlerbirliği", "away": "Kocaelispor", "date": "2026-12-21", "time": "20:00", "stadium": "Eryaman Stadyumu"},
 ]
 
+# Haftalık antrenman programı (kulübün gönderdiği görselden). kind: meal | gym | training | match | meeting | camp | off
+def _prog_week() -> dict:
+    items = []
+
+    def add(day, time, title, kind):
+        items.append({"date": f"2026-11-{day:02d}", "time": time, "title": title, "kind": kind})
+
+    for day in (15, 18, 24):                                       # öğleden sonra düzeni
+        add(day, "14:00", "Ara öğün", "meal"); add(day, "15:45", "Fitness / Gym", "gym")
+        add(day, "16:00", "Antrenman", "training"); add(day, "18:00", "Akşam yemeği", "meal")
+    for day in (16, 17, 19, 22):                                   # sabah düzeni
+        add(day, "10:00", "Kahvaltı (zorunlu)", "meal"); add(day, "11:45", "Fitness / Gym", "gym")
+        add(day, "12:00", "Antrenman", "training"); add(day, "14:00", "Öğle yemeği (zorunlu)", "meal")
+    add(20, "15:00", "Ara öğün", "meal"); add(20, "15:00", "Kamp başlar", "camp")
+    add(20, "17:00", "Antrenman", "training"); add(20, "19:00", "Akşam yemeği", "meal"); add(20, "22:00", "Ara öğün", "meal")
+    add(21, "11:00", "Kahvaltı (zorunlu)", "meal"); add(21, "15:30", "Maç yemeği", "meal")
+    add(21, "16:45", "Toplantı ve hareket", "meeting"); add(21, "19:00", "Kocaelispor - Fenerbahçe", "match")
+    add(23, "", "İzin", "off")
+    items.sort(key=lambda i: (i["date"], i["time"] or "99:99"))
+    return {"id": "2026-11-15", "title": "Antrenman Programı", "subtitle": "12- Fenerbahçe", "coach": "Selçuk İnan",
+            "start": "2026-11-15", "end": "2026-11-24", "items": items}
+
+
+DEFAULT_PROGRAMS = [_prog_week()]
+
+
 DEFAULT_PLAYERS = [
     {"name": "Serhat Öztaşdelen", "dob": "2004-12-09", "no": 83, "pos": "Kaleci"},
     {"name": "Aleksandar Jovanović", "dob": "1992-12-06", "no": 1, "pos": "Kaleci"},
@@ -145,6 +171,7 @@ def _default_data() -> dict:
         "fixtures": [dict(f) for f in DEFAULT_FIXTURES],
         "players": [dict(p) for p in DEFAULT_PLAYERS],
         "press": [dict(p) for p in DEFAULT_PRESS],
+        "programs": [dict(p) for p in DEFAULT_PROGRAMS],
     }
 
 
@@ -185,6 +212,12 @@ def load_raw() -> dict:
             data.setdefault("players", [])
             if missing_press:
                 data["press"] = [dict(p) for p in DEFAULT_PRESS]
+            # Yeni sürümle gelen haftalık programlar (id'si henüz olmayanlar) kullanıcının verisine eklenir
+            progs = data.setdefault("programs", [])
+            have = {p.get("id") for p in progs if isinstance(p, dict)}
+            new_progs = [json.loads(json.dumps(p)) for p in DEFAULT_PROGRAMS if p["id"] not in have]
+            progs.extend(new_progs)
+            if missing_press or new_progs:
                 save_raw(data)
             return data
         except (OSError, json.JSONDecodeError):
@@ -224,7 +257,15 @@ def load_data() -> dict:
         press.append({
             "hafta": hafta, "beinsports": p.get("beinsports", ""), "antrenman": p.get("antrenman", ""),
         })
-    return {"fixtures": fixtures, "players": players, "press": press}
+    programs = []
+    for pr in raw.get("programs", []):
+        if not isinstance(pr, dict) or _parse_date(pr.get("start")) is None:
+            continue
+        items = [it for it in pr.get("items", []) if isinstance(it, dict) and _parse_date(it.get("date")) is not None]
+        end = pr.get("end") if _parse_date(pr.get("end")) is not None else pr["start"]
+        programs.append({**pr, "end": end, "items": items})
+    programs.sort(key=lambda pr: pr["start"])
+    return {"fixtures": fixtures, "players": players, "press": press, "programs": programs}
 
 
 def save_fixtures(fixtures: list) -> None:
