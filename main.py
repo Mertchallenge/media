@@ -4054,7 +4054,13 @@ class MainWindow(QMainWindow):
             csv_btn = QPushButton("Raporu (CSV) aç")
             csv_btn.setObjectName("outlineSmall")
             csv_btn.setFixedHeight(32)
+            if csv_file and not os.path.isfile(csv_file) and folder and os.path.isfile(os.path.join(folder, "Rapor.csv")):
+                csv_file = os.path.join(folder, "Rapor.csv")  # klasör aynı yerdeyse rapor da orada
             csv_btn.setEnabled(bool(csv_file) and os.path.isfile(csv_file))
+            csv_btn.setToolTip(csv_file if csv_btn.isEnabled() else
+                               f"Rapor dosyası bulunamadı (taşınmış ya da silinmiş olabilir):\n{csv_file or '(kayıtlı yol yok)'}")
+            folder_btn.setToolTip(folder if folder_btn.isEnabled() else
+                                  f"Klasör bulunamadı (taşınmış ya da silinmiş olabilir):\n{folder or '(kayıtlı yol yok)'}")
             csv_btn.clicked.connect(lambda checked=False, p=csv_file: QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
             row_layout.addWidget(folder_btn)
             row_layout.addWidget(csv_btn)
