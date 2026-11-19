@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Güncelleme testi: bu pencere çıktıysa uygulama içi güncelleme çalışıyor."
+UPDATE_NOTES = "Güncelleme kontrolü artık GitHub'dan anında (önbelleksiz) okuyor; yeni sürümler hemen görünür."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -1326,6 +1326,25 @@ def overlay_dir() -> Path:
 RUNNING_BUNDLE_API = int(os.environ.get("MEDIASTAFF_BUNDLE_API", "0") or 0)   # launcher.py ayarlar
 
 
+def _fetch_repo_file(name: str, timeout: int, head_bytes=None) -> bytes:
+    """Depodaki dosyayı GitHub API'sinden (önbelleksiz, anında güncel) okur; olmazsa raw adresine düşer.
+    head_bytes verilirse yalnızca baştan o kadar bayt okunur."""
+    attempts = [
+        (f"https://api.github.com/repos/{UPDATE_REPO}/contents/{name}?ref=main",
+         {"Accept": "application/vnd.github.raw"}),
+        (UPDATE_RAW_BASE + name + "?t=" + str(int(time.time())), {}),
+    ]
+    last = None
+    for url, extra in attempts:
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "MediaStaffKS-Updater", **extra})
+            with urllib.request.urlopen(request, timeout=timeout, context=_update_ssl_context()) as response:
+                return response.read(head_bytes) if head_bytes else response.read()
+        except Exception as e:  # noqa: BLE001
+            last = e
+    raise last
+
+
 class UpdateCheckWorker(QThread):
     found = pyqtSignal(dict)
     none_found = pyqtSignal()
@@ -1334,12 +1353,8 @@ class UpdateCheckWorker(QThread):
     def run(self):
         _log_update_event(f"kontrol başladı (yerel sürüm {APP_VERSION}, frozen={is_frozen()})")
         try:
-            # Sürüm bilgisi dosyanın başında; tamamını indirmeye gerek yok (Range desteklenmezse hepsi gelir)
-            request = urllib.request.Request(
-                UPDATE_RAW_BASE + "main.py?t=" + str(int(time.time())),
-                headers={"User-Agent": "MediaStaffKS-Updater", "Range": "bytes=0-24575"})
-            with urllib.request.urlopen(request, timeout=15, context=_update_ssl_context()) as response:
-                head = response.read().decode("utf-8", "replace")
+            # Sürüm bilgisi dosyanın başında; tamamını indirmeye gerek yok
+            head = _fetch_repo_file("main.py", 15, head_bytes=24576).decode("utf-8", "replace")
         except Exception as e:
             _log_update_event(f"kontrol HATASI: {e!r}")
             self.failed.emit(str(e))
@@ -1363,11 +1378,7 @@ class UpdateDownloadWorker(QThread):
             tmp_dir = Path(tempfile.mkdtemp(prefix="mediastaffks_update_"))
             for name in UPDATE_FILES:
                 self.progress.emit(f"İndiriliyor: {name}")
-                request = urllib.request.Request(
-                    UPDATE_RAW_BASE + name + "?t=" + str(int(time.time())),
-                    headers={"User-Agent": "MediaStaffKS-Updater"})
-                with urllib.request.urlopen(request, timeout=60, context=_update_ssl_context()) as response:
-                    payload = response.read()
+                payload = _fetch_repo_file(name, 60)
                 text = payload.decode("utf-8")
                 compile(text, name, "exec")          # bozuk/yarım indirmeyi uygulamadan yakala
                 if name == "main.py" and not _update_meta(text)[0]:
