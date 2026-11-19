@@ -2539,6 +2539,83 @@ SOCIAL_FORMATS = [
     ("Kare", "Kare 1080×1080", 1080, 1080),
 ]
 LOGO_POSITIONS = ["Sağ alt", "Sol alt", "Sağ üst", "Sol üst"]
+KSMEDYA_LOGO_FILENAMES = ("ksmedya_logo.png",)
+KSMEDYA_LOGO_BASE64 = (
+    "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"
+)
+LOGO_KINDS = ["KSmedya", "Kulüp arması"]
 
 MATCHDAY_PHASES = [
     ("Maç öncesi", [
@@ -2570,7 +2647,7 @@ def load_medya_extra() -> dict:
         "share_links": {}, "share_message": DEFAULT_SHARE_MESSAGE, "best_count": DEFAULT_BEST_COUNT,
         "matchday": {},
         "social": {"formats": ["Story", "Gonderi"], "mode": "Kırp", "logo": True,
-                   "logo_pos": "Sağ alt", "logo_size": 14, "source": "Seçilenler"},
+                   "logo_pos": "Sağ alt", "logo_size": 12, "logo_kind": "KSmedya", "source": "Seçilenler"},
     }
     data = read_json(MEDYA_EXTRA_PATH, {})
     if isinstance(data, dict):
@@ -2772,16 +2849,26 @@ _logo_cache: dict = {}
 _haar_cache: dict = {}
 
 
-def load_logo_bgra():
-    if "logo" in _logo_cache:
-        return _logo_cache["logo"]
+def load_logo_bgra(kind: str = "KSmedya"):
+    """Sosyal medya görsellerine eklenecek logo (BGRA). 'KSmedya' = beyaz KSmedya rozeti, 'Kulüp arması' = renkli arma."""
+    if kind in _logo_cache:
+        return _logo_cache[kind]
     img = None
     try:
-        path = club_logo_source_path()
+        if kind == "KSmedya":
+            names, b64 = KSMEDYA_LOGO_FILENAMES, KSMEDYA_LOGO_BASE64
+            path = None
+            for n in names:
+                cand = Path(__file__).resolve().parent / n
+                if cand.is_file():
+                    path = cand
+                    break
+        else:
+            path, b64 = club_logo_source_path(), CLUB_LOGO_BASE64
         if path:
             data = np.fromfile(str(path), dtype=np.uint8)
         else:
-            data = np.frombuffer(base64.b64decode(CLUB_LOGO_BASE64), dtype=np.uint8)
+            data = np.frombuffer(base64.b64decode(b64), dtype=np.uint8)
         img = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
         if img is not None and img.ndim == 3 and img.shape[2] == 3:
             alpha = np.full(img.shape[:2] + (1,), 255, dtype=np.uint8)
@@ -2790,7 +2877,7 @@ def load_logo_bgra():
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA)
     except Exception:
         img = None
-    _logo_cache["logo"] = img
+    _logo_cache[kind] = img
     return img
 
 
@@ -2839,16 +2926,21 @@ def overlay_logo(canvas, logo, pos: str, pct: float, story_safe: bool):
     lw = max(24, int(cw * pct / 100.0))
     lh = max(1, int(logo.shape[0] * lw / float(logo.shape[1])))
     small = cv2.resize(logo, (lw, lh), interpolation=cv2.INTER_AREA)
-    m = int(cw * 0.04)
-    top_m, bot_m = m, m
+    mx = int(cw * 0.036)                 # tasarımcının 1080×1350 şablonundaki kenar boşlukları
+    top_m = bot_m = int(ch * 0.055)
     if story_safe:  # story arayüzü üst/alt şeridi logoyu kapatmasın
-        top_m, bot_m = max(m, int(ch * 0.13)), max(m, int(ch * 0.18))
-    x = cw - lw - m if "Sağ" in pos else m
+        top_m, bot_m = max(top_m, int(ch * 0.13)), max(bot_m, int(ch * 0.18))
+    x = cw - lw - mx if "Sağ" in pos else mx
     y = ch - lh - bot_m if "alt" in pos else top_m
     if x < 0 or y < 0 or x + lw > cw or y + lh > ch:
         return canvas
     alpha = small[:, :, 3:4].astype(np.float32) / 255.0
     roi = canvas[y:y + lh, x:x + lw].astype(np.float32)
+    opaque = small[:, :, 3] > 20
+    if opaque.any() and float(small[:, :, :3][opaque].mean()) > 200:
+        # Açık renkli (beyaz) logo parlak fotoğrafta kaybolmasın: arkasına yumuşak, hafif gölge
+        shadow = cv2.GaussianBlur(small[:, :, 3], (0, 0), max(1.0, lw * 0.025)).astype(np.float32)[:, :, None] / 255.0
+        roi = roi * (1.0 - 0.45 * shadow)
     canvas[y:y + lh, x:x + lw] = (roi * (1.0 - alpha) + small[:, :, :3].astype(np.float32) * alpha).astype(np.uint8)
     return canvas
 
@@ -2909,10 +3001,11 @@ class SocialWorker(QThread):
     log_signal = pyqtSignal(str, str)
     done_signal = pyqtSignal(int, str)
 
-    def __init__(self, jobs, out_root, formats, mode, logo_on, logo_pos, logo_pct, parent=None):
+    def __init__(self, jobs, out_root, formats, mode, logo_on, logo_pos, logo_pct, logo_kind="KSmedya", parent=None):
         super().__init__(parent)
         self.jobs, self.out_root, self.formats = jobs, out_root, formats
         self.mode, self.logo_on, self.logo_pos, self.logo_pct = mode, logo_on, logo_pos, logo_pct
+        self.logo_kind = logo_kind
         self._cancel = False
 
     def cancel(self):
@@ -2921,7 +3014,7 @@ class SocialWorker(QThread):
     def run(self):
         total = len(self.jobs) * len(self.formats)
         done = written = 0
-        logo = load_logo_bgra() if self.logo_on else None
+        logo = load_logo_bgra(self.logo_kind) if self.logo_on else None
         if self.logo_on and logo is None:
             self.log_signal.emit("Logo dosyası okunamadı, logo eklenmeden devam ediliyor.", "warn")
         for i, (player, path) in enumerate(self.jobs, 1):
@@ -4042,10 +4135,15 @@ class SharePage(QWidget):
         c.addWidget(self.win._section_label("Logo"))
         logo_row = QHBoxLayout()
         logo_row.setSpacing(10)
-        self.logo_check = QCheckBox("Kocaelispor logosu ekle")
+        self.logo_check = QCheckBox("Logo ekle")
         self.logo_check.setChecked(bool(sx.get("logo", True)))
         self.logo_check.toggled.connect(self._social_changed)
         logo_row.addWidget(self.logo_check)
+        self.logo_kind = QComboBox()
+        self.logo_kind.addItems(LOGO_KINDS)
+        self.logo_kind.setCurrentText(sx.get("logo_kind", "KSmedya"))
+        self.logo_kind.currentIndexChanged.connect(self._social_changed)
+        logo_row.addWidget(self.logo_kind)
         self.logo_pos = QComboBox()
         self.logo_pos.addItems(LOGO_POSITIONS)
         self.logo_pos.setCurrentText(sx.get("logo_pos", "Sağ alt"))
@@ -4054,7 +4152,7 @@ class SharePage(QWidget):
         logo_row.addWidget(QLabel("Genişlik %"))
         self.logo_size = QSpinBox()
         self.logo_size.setRange(6, 30)
-        self.logo_size.setValue(int(sx.get("logo_size", 14)))
+        self.logo_size.setValue(int(sx.get("logo_size", 12)))
         self.logo_size.valueChanged.connect(self._social_changed)
         logo_row.addWidget(self.logo_size)
         logo_hint = QLabel("Story'de logo, Instagram arayüzünün kapatmayacağı güvenli alana yerleşir.")
@@ -4114,7 +4212,7 @@ class SharePage(QWidget):
         mode = next((n for n, b in self.mode_buttons.items() if b.isChecked()), "Kırp")
         return {"formats": [k for k, cb in self.fmt_checks.items() if cb.isChecked()], "mode": mode,
                 "logo": self.logo_check.isChecked(), "logo_pos": self.logo_pos.currentText(),
-                "logo_size": self.logo_size.value(), "source": source}
+                "logo_size": self.logo_size.value(), "logo_kind": self.logo_kind.currentText(), "source": source}
 
     def _social_changed(self, *args):
         self.extra["social"] = self._social_settings()
@@ -4164,7 +4262,7 @@ class SharePage(QWidget):
         self.social_bar.setValue(0)
         self.social_btn.setText("Durdur")
         self.social_status.setText("Hazırlanıyor…")
-        self.social_worker = SocialWorker(jobs, out_root, formats, s["mode"], s["logo"], s["logo_pos"], s["logo_size"])
+        self.social_worker = SocialWorker(jobs, out_root, formats, s["mode"], s["logo"], s["logo_pos"], s["logo_size"], s["logo_kind"])
         self.social_worker.progress_signal.connect(lambda d, t: (self.social_bar.setValue(d),
                                                                   self.social_status.setText(f"{d} / {t}")))
         self.social_worker.log_signal.connect(lambda m, lvl: self.win._append_log(m, lvl))
