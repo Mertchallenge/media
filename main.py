@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Daha profesyonel: Maçlar (duyuru metni, Takvim'e ekle, o günün programı), Doğum günleri (ay başlıkları, mesajı kopyala), Basın (otomatik kayıt, isim tamamlama, sırası gelenler), düğme stilleri."
+UPDATE_NOTES = "Paylaşım takibine Selçuk İnan eklendi (fotoğrafı için oyuncu_fotograflari klasörüne Selçuk İnan.png koyabilirsin)."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -1245,7 +1245,8 @@ def daily_backup(keep_days: int = 14) -> int:
 
 
 def load_config() -> dict:
-    cfg = {"anthropic_api_key": "", "ai_model": DEFAULT_AI_MODEL, "remember_dept": False, "last_dept": "", "theme": "gece"}
+    cfg = {"anthropic_api_key": "", "ai_model": DEFAULT_AI_MODEL, "remember_dept": False, "last_dept": "", "theme": "gece",
+           "share_extra": ["Selçuk İnan"]}   # oyuncu klasörü olmayan ama paylaşım takibinde olması gereken kişiler (ör. teknik direktör)
     data = read_json(CONFIG_PATH, {})
     if isinstance(data, dict):
         cfg.update({k: v for k, v in data.items() if k in cfg})
@@ -6502,8 +6503,17 @@ class MainWindow(QMainWindow):
     # Ana sayfadaki kulüp kartları
     # ------------------------------------------------------------------
     def _share_universe(self) -> list:
+        """Paylaşım takibindeki kişiler: referans klasöründeki oyuncular + Ayarlar'daki ek kişiler (ör. Selçuk İnan)."""
         names = sorted(load_reference_counts(self.ref_folder).keys(), key=turkish_lower)
-        return names or [p["name"] for p in ROSTER]
+        names = names or [p["name"] for p in ROSTER]
+        have = {turkish_lower(n) for n in names}
+        extra = load_config().get("share_extra") or []
+        for n in extra if isinstance(extra, list) else []:
+            n = str(n).strip()
+            if n and turkish_lower(n) not in have:
+                names.append(n)
+                have.add(turkish_lower(n))
+        return names
 
     def _share_add(self):
         names = self._share_universe()
