@@ -474,6 +474,169 @@ def tm_sync(ssl_context=None, today: "date | None" = None, html: "str | None" = 
 # ==========================================================================================
 #  HAFTALIK PROGRAM -> TAKVİM (.ics)  (Mac Takvim / widget'ı ve bildirimleri için)
 # ==========================================================================================
+
+# ---------------------------------------------------------------------------
+# Süper Lig: puan durumu + haftanın maçları (Transfermarkt) ve takım logoları
+# ---------------------------------------------------------------------------
+LIG_STANDINGS_URL = "https://www.transfermarkt.com.tr/super-lig/tabelle/wettbewerb/TR1"
+LIG_MATCHDAY_URL = "https://www.transfermarkt.com.tr/super-lig/spieltag/wettbewerb/TR1"
+LIG_MATCHDAY_N_URL = "https://www.transfermarkt.com.tr/super-lig/spieltag/wettbewerb/TR1/saison_id/{season}/spieltag/{n}"
+LIG_CREST_URL = "https://img.a.transfermarkt.technology/wappen/head/{id}.png"
+LIG_PATH = DATA_PATH.parent / "lig.json"
+LIG_CRESTS_DIR = DATA_PATH.parent / "lig_logolari"
+LIG_MAX_MATCHDAY = 34
+
+
+def lig_get(url: str, ssl_context=None, timeout: int = 25) -> str:
+    req = urllib.request.Request(url, headers={
+        "User-Agent": TM_USER_AGENT, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.5"})
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def _lig_text(fragment: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", fragment or "")
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&#039;", "'").replace("&quot;", '"')
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def lig_parse_standings(html: str) -> list:
+    """Transfermarkt 'Puan durumu' tablosu -> [{rank,id,name,played,won,draw,lost,gf,ga,gd,pts,zone}, ...] (sıralı)."""
+    rows = []
+    for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html or "", flags=re.S):
+        m_rank = re.match(r'\s*<td class="rechts hauptlink"([^>]*)>\s*(\d{1,2})\b', tr)
+        m_team = re.search(r'<td class="no-border-links hauptlink">\s*<a[^>]*href="[^"]*/verein/(\d+)/[^"]*"[^>]*>([^<]+)</a>', tr)
+        if not m_rank or not m_team:
+            continue
+        cells_html = tr[m_team.end():]
+        cells = [_lig_text(c) for c in re.findall(r'<td class="zentriert[^"]*">([^<]*)</td>', cells_html)]
+        try:
+            if len(cells) >= 7:
+                played, won, draw, lost = (int(x) for x in cells[0:4])
+                gf, ga = (int(x) for x in cells[4].split(":"))
+                gd, pts = int(cells[5].replace("+", "")), int(cells[6])
+            elif len(cells) >= 3:
+                played, gd, pts = int(cells[0]), int(cells[1].replace("+", "")), int(cells[2])
+                won = draw = lost = gf = ga = None
+            else:
+                continue
+        except ValueError:
+            continue
+        zone = re.search(r"background-color:\s*(#[0-9a-fA-F]{3,8})", m_rank.group(1))
+        rows.append({"rank": int(m_rank.group(2)), "id": int(m_team.group(1)), "name": _lig_text(m_team.group(2)),
+                     "played": played, "won": won, "draw": draw, "lost": lost, "gf": gf, "ga": ga,
+                     "gd": gd, "pts": pts, "zone": zone.group(1) if zone else ""})
+    rows.sort(key=lambda r: r["rank"])
+    return rows
+
+
+def lig_validate_standings(rows: list) -> str:
+    """Boş metin = geçerli; aksi halde nedenini söyler."""
+    if len(rows) < 16:
+        return f"puan durumunda yalnızca {len(rows)} takım bulundu"
+    if [r["rank"] for r in rows] != list(range(1, len(rows) + 1)):
+        return "sıralama numaraları ardışık değil"
+    if len({r["id"] for r in rows}) != len(rows):
+        return "aynı takım birden fazla kez geçiyor"
+    return ""
+
+
+def _lig_team_cell(fragment: str) -> dict:
+    link = re.search(r'<a[^>]*href="[^"]*/verein/(\d+)/[^"]*"[^>]*>([^<]+)</a>', fragment)
+    place = re.search(r'class="tabellenplatz">\((\d+)\.\)', fragment)
+    return {"id": int(link.group(1)) if link else 0, "name": _lig_text(link.group(2)) if link else "",
+            "rank": int(place.group(1)) if place else None}
+
+
+def lig_parse_matchday(html: str) -> dict:
+    """Transfermarkt 'Haftanın özeti' sayfası -> {"matchday": n, "season": 2026, "matches": [...]}.
+    Maç: {home:{id,name,rank}, away:{...}, date:'YYYY-MM-DD', time:'HH:MM', score:'2:1'|None, status:''|'finished'|'live'...}"""
+    html = html or ""
+    title = re.search(r"<title>(.*?)</title>", html, flags=re.S)
+    md = re.search(r"(\d{1,2})\.\s*hafta", title.group(1), flags=re.I) if title else None
+    season = re.search(r"saison_id/(\d{4})", html)
+    matches = []
+    for tbl in re.findall(r"<table[^>]*>(.*?)</table>", html, flags=re.S):
+        if "matchresult" not in tbl:
+            continue
+        first = re.search(r'<tr class="table-grosse-schrift">(.*?)</tr>', tbl, flags=re.S)
+        if not first:
+            continue
+        names = re.findall(r'<td class="[^"]*hide-for-small spieltagsansicht-vereinsname[^"]*">(.*?)</td>', first.group(1), flags=re.S)
+        res = re.search(r'class="matchresult([^"]*)">([^<]*)<', first.group(1))
+        if len(names) != 2 or not res:
+            continue
+        home, away = _lig_team_cell(names[0]), _lig_team_cell(names[1])
+        d = re.search(r"datum/(\d{4}-\d{2}-\d{2})", tbl)
+        t = re.search(r"Saat:\s*(\d{1,2}:\d{2})", tbl)
+        raw = _lig_text(res.group(2))
+        score = raw if re.fullmatch(r"\d+:\d+", raw) else None
+        if not (home["id"] and away["id"] and d):
+            continue
+        matches.append({"home": home, "away": away, "date": d.group(1),
+                        "time": (t.group(1).rjust(5, "0") if t else ""), "score": score,
+                        "status": res.group(1).strip()})
+    matches.sort(key=lambda m: (m["date"], m["time"] or "99:99", m["home"]["name"]))
+    return {"matchday": int(md.group(1)) if md else None, "season": int(season.group(1)) if season else None,
+            "matches": matches}
+
+
+def lig_validate_matchday(md: dict) -> str:
+    n = len(md.get("matches") or [])
+    if n < 4:
+        return f"haftada yalnızca {n} maç bulundu"
+    if not md.get("matchday"):
+        return "hafta numarası okunamadı"
+    return ""
+
+
+def lig_load() -> dict:
+    try:
+        with open(LIG_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def lig_save(cache: dict):
+    try:
+        tmp = LIG_PATH.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(cache, fh, ensure_ascii=False)
+        os.replace(tmp, LIG_PATH)
+    except OSError:
+        pass
+
+
+def lig_crest_path(team_id: int) -> Path:
+    return LIG_CRESTS_DIR / f"{int(team_id)}.png"
+
+
+def lig_download_crests(ids, ssl_context=None, timeout: int = 20) -> int:
+    """Eksik takım logolarını indirir (varsa atlar). İndirilen dosya sayısını döndürür; hatalar sessizce geçilir."""
+    got = 0
+    try:
+        LIG_CRESTS_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return 0
+    for tid in sorted({int(i) for i in ids if i}):
+        dest = lig_crest_path(tid)
+        if dest.is_file() and dest.stat().st_size > 200:
+            continue
+        try:
+            req = urllib.request.Request(LIG_CREST_URL.format(id=tid), headers={"User-Agent": TM_USER_AGENT})
+            with urllib.request.urlopen(req, timeout=timeout, context=ssl_context) as resp:
+                data = resp.read()
+            if data[:4] == b"\x89PNG" and len(data) > 200:
+                dest.write_bytes(data)
+                got += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return got
+
+
 import hashlib
 from datetime import datetime, timedelta
 

@@ -125,3 +125,6 @@ aralıklarla (genelde 15+ dk) tazelenir.
 - Ayar/kayıt dosyaları önce geçici dosyaya yazılıp yer değiştirilir; bir önceki sağlam sürüm `.bak` olarak kalır.
   Dosya bozulursa kenara alınır (`.bozuk-…`) ve `.bak` geri yüklenir.
 - Her günün ilk açılışında veri dosyaları `Yedekler/<tarih>/` altına kopyalanır (son 14 gün). Ayarlar → *Yedekler klasörünü aç*.
+
+## Süper Lig (v1.7.0)
+Maçlar sayfasının üstündeki "Süper Lig" anahtarı puan durumunu ve haftanın maçlarını gösterir (takım logolarıyla). Veri Transfermarkt'tan çekilir, `lig.json` olarak önbelleğe alınır (20 dakikadan eskiyse açılışta yenilenir; "Yenile" ile elle de çekilir). `‹ ›` ile hafta hafta gezilir, "Güncel hafta" bugüne döner. Logolar ilk seferde `lig_logolari/` klasörüne inilir; inemezse yerleşik logo ya da kısaltma rozeti gösterilir. Kocaelispor satırı/maçı yeşil vurgulanır.

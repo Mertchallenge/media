@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.7.0"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Paylaşım takibine Selçuk İnan eklendi (fotoğrafı için oyuncu_fotograflari klasörüne Selçuk İnan.png koyabilirsin)."
+UPDATE_NOTES = "Maçlar sayfasına Süper Lig eklendi: puan durumu ve haftanın maçları (takım logolarıyla, Transfermarkt'tan; hafta hafta gezinebilirsin)."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -4146,6 +4146,87 @@ class TmSyncWorker(QThread):
         self.done_signal.emit(res)
 
 
+class LigWorker(QThread):
+    """Süper Lig puan durumu / haftanın maçlarını Transfermarkt'tan indirip ayrıştırır (dosyaya yazmaz).
+    urllib engellenirse ilgili parça `browser` listesine konur; ana iş parçacığı QtWebEngine ile dener."""
+    done_signal = pyqtSignal(dict)
+
+    def __init__(self, want_standings: bool, matchday, season, parent=None):
+        super().__init__(parent)
+        self.want_standings = want_standings
+        self.matchday = matchday          # None = güncel hafta
+        self.season = season
+
+    def run(self):
+        res = {"standings": None, "matchday": None, "browser": [], "errors": []}
+        ctx = _update_ssl_context()
+        if self.want_standings:
+            try:
+                rows = ks_data.lig_parse_standings(ks_data.lig_get(ks_data.LIG_STANDINGS_URL, ctx))
+                err = ks_data.lig_validate_standings(rows)
+                if err:
+                    raise ValueError(err)
+                res["standings"] = rows
+            except Exception as e:  # noqa: BLE001
+                res["browser"].append(("standings", ks_data.LIG_STANDINGS_URL))
+                res["errors"].append(str(e) or e.__class__.__name__)
+        url = (ks_data.LIG_MATCHDAY_N_URL.format(season=self.season or 2026, n=self.matchday)
+               if self.matchday else ks_data.LIG_MATCHDAY_URL)
+        try:
+            md = ks_data.lig_parse_matchday(ks_data.lig_get(url, ctx))
+            err = ks_data.lig_validate_matchday(md)
+            if err:
+                raise ValueError(err)
+            res["matchday"] = md
+        except Exception as e:  # noqa: BLE001
+            res["browser"].append(("matchday", url))
+            res["errors"].append(str(e) or e.__class__.__name__)
+        self.done_signal.emit(res)
+
+
+class CrestWorker(QThread):
+    """Eksik Süper Lig takım logolarını indirir."""
+    done_signal = pyqtSignal(int)
+
+    def __init__(self, ids, parent=None):
+        super().__init__(parent)
+        self.ids = list(ids)
+
+    def run(self):
+        try:
+            n = ks_data.lig_download_crests(self.ids, _update_ssl_context())
+        except Exception:  # noqa: BLE001
+            n = 0
+        self.done_signal.emit(n)
+
+
+_lig_crest_cache: dict = {}
+
+
+def lig_crest_pixmap(team_id: int, size: int):
+    """İndirilmiş Transfermarkt logosunu kare tuvale (oran korunarak, retina için 2x) oturtur; dosya yoksa None."""
+    key = (int(team_id), size)
+    if key in _lig_crest_cache:
+        return _lig_crest_cache[key]
+    path = ks_data.lig_crest_path(team_id)
+    if not path.is_file():
+        return None
+    raw = QPixmap()
+    if not raw.load(str(path)) or raw.isNull():
+        return None
+    dpr = 2
+    box = size * dpr
+    scaled = raw.scaled(box, box, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    canvas = QPixmap(box, box)
+    canvas.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(canvas)
+    painter.drawPixmap((box - scaled.width()) // 2, (box - scaled.height()) // 2, scaled)
+    painter.end()
+    canvas.setDevicePixelRatio(dpr)
+    _lig_crest_cache[key] = canvas
+    return canvas
+
+
 class NewsWorker(QThread):
     done_signal = pyqtSignal(list, str)   # haberler, hata metni
 
@@ -6937,6 +7018,43 @@ class MainWindow(QMainWindow):
     # SAYFA 2 — MAÇLAR (liste + detay + yapay zekâ yorumu)
     # ==================================================================
     def _build_matches_page(self) -> QWidget:
+        """Maçlar: üstte "Kocaelispor | Süper Lig" anahtarı; altında ilgili görünüm."""
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(14)
+        seg = QHBoxLayout()
+        seg.setSpacing(8)
+        self.match_seg_group = QButtonGroup(self)
+        self.match_seg_group.setExclusive(True)
+        for i, name in enumerate(("Kocaelispor", "Süper Lig · Puan durumu ve hafta")):
+            b = QPushButton(name)
+            b.setObjectName("segBtn")
+            b.setCheckable(True)
+            b.setChecked(i == 0)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda checked=False, i=i: self._set_matches_view(i))
+            self.match_seg_group.addButton(b, i)
+            seg.addWidget(b)
+        seg.addStretch(1)
+        outer.addLayout(seg)
+        self.match_stack = QStackedWidget()
+        self.match_stack.addWidget(self._build_club_matches_view())
+        self.match_stack.addWidget(self._build_league_view())
+        outer.addWidget(self.match_stack, 1)
+        self._lig = ks_data.lig_load()
+        self._lig_view_md = None
+        self._lig_worker = None
+        self._lig_crest_worker = None
+        self._lig_page = None
+        return page
+
+    def _set_matches_view(self, i: int):
+        self.match_stack.setCurrentIndex(i)
+        if i == 1:
+            self._lig_open()
+
+    def _build_club_matches_view(self) -> QWidget:
         page = QWidget()
         row = QHBoxLayout(page)
         row.setContentsMargins(0, 0, 0, 0)
@@ -6968,6 +7086,364 @@ class MainWindow(QMainWindow):
 
         row.addWidget(self._scroll(detail_inner), 1)
         return page
+
+    # ------------------------------------------------------------------
+    # SÜPER LİG: puan durumu + haftanın maçları (Transfermarkt)
+    # ------------------------------------------------------------------
+    def _build_league_view(self) -> QWidget:
+        view = QWidget()
+        row = QHBoxLayout(view)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(20)
+
+        st_card, st = self._card(margins=(20, 18, 20, 14), spacing=8)
+        head = QHBoxLayout()
+        head.addWidget(self._section_label("Puan durumu"))
+        head.addStretch(1)
+        self.lig_status = QLabel("")
+        self.lig_status.setObjectName("dateSub")
+        head.addWidget(self.lig_status)
+        refresh = QPushButton("Yenile")
+        refresh.setObjectName("outlineSmall")
+        refresh.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh.clicked.connect(lambda checked=False: self._lig_refresh(force=True))
+        head.addWidget(refresh)
+        st.addLayout(head)
+        st_inner = QWidget()
+        self.lig_table = QVBoxLayout(st_inner)
+        self.lig_table.setContentsMargins(0, 0, 0, 0)
+        self.lig_table.setSpacing(2)
+        st.addWidget(self._scroll(st_inner), 1)
+        row.addWidget(st_card, 11)
+
+        md_card, md = self._card(margins=(20, 18, 20, 14), spacing=8)
+        nav = QHBoxLayout()
+        nav.setSpacing(8)
+        self.lig_prev = QPushButton("‹")
+        self.lig_next = QPushButton("›")
+        for b, d in ((self.lig_prev, -1), (self.lig_next, 1)):
+            b.setObjectName("outlineSmall")
+            b.setFixedWidth(40)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda checked=False, d=d: self._lig_step(d))
+        self.lig_md_title = QLabel("Haftanın maçları")
+        self.lig_md_title.setObjectName("rowTitle")
+        self.lig_md_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cur = QPushButton("Güncel hafta")
+        cur.setObjectName("linkBtn")
+        cur.setCursor(Qt.CursorShape.PointingHandCursor)
+        cur.clicked.connect(self._lig_goto_current)
+        nav.addWidget(self.lig_prev)
+        nav.addWidget(self.lig_md_title, 1)
+        nav.addWidget(self.lig_next)
+        nav.addWidget(cur)
+        md.addLayout(nav)
+        md_inner = QWidget()
+        self.lig_matches = QVBoxLayout(md_inner)
+        self.lig_matches.setContentsMargins(0, 0, 0, 0)
+        self.lig_matches.setSpacing(6)
+        md.addWidget(self._scroll(md_inner), 1)
+        row.addWidget(md_card, 10)
+        return view
+
+    def _lig_crest(self, team_id: int, name: str, size: int) -> QLabel:
+        label = QLabel()
+        label.setFixedSize(size, size)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pm = lig_crest_pixmap(team_id, size) or get_team_logo_pixmap(name, size)
+        if pm is not None:
+            label.setPixmap(pm)
+        else:
+            label.setText(team_abbr(name)[:3])
+            label.setStyleSheet(f"color: {K_MUTED}; font-size: {max(8, size // 3)}px; font-weight: 700; "
+                                f"background: #1B2A22; border-radius: {size // 2}px;")
+        return label
+
+    def _lig_open(self):
+        self._lig_render()
+        self._lig_refresh(force=False)
+
+    def _lig_age_min(self):
+        try:
+            ts = datetime.fromisoformat(self._lig.get("fetched", ""))
+            return (datetime.now() - ts).total_seconds() / 60
+        except (ValueError, TypeError):
+            return None
+
+    def _lig_refresh(self, force: bool = False, matchday=None):
+        if self._lig_worker is not None and self._lig_worker.isRunning():
+            return
+        age = self._lig_age_min()
+        stale = force or age is None or age > 20 or not self._lig.get("standings")
+        md_n = matchday if matchday is not None else self._lig_view_md
+        md_cached = self._lig.get("matchdays", {}).get(str(md_n)) if md_n else None
+        need_md = force or md_cached is None or md_n is None
+        if not stale and not need_md:
+            return
+        self.lig_status.setText("Güncelleniyor…")
+        season = self._lig.get("season") or 2026
+        self._lig_page_pending = []
+        w = LigWorker(stale, md_n if md_n else None, season, self)
+        w.done_signal.connect(self._lig_worker_done)
+        self._lig_worker = w
+        w.start()
+
+    def _lig_worker_done(self, res: dict):
+        self._lig_worker = None
+        if res.get("standings"):
+            self._lig_store_standings(res["standings"])
+        if res.get("matchday"):
+            self._lig_store_matchday(res["matchday"])
+        browser = res.get("browser") or []
+        if browser and HAS_WEBENGINE:
+            self._lig_web_queue = list(browser)
+            self._lig_web_next()
+            return
+        errors = res.get("errors") or []
+        self._lig_finish(errors[0] if errors else "")
+
+    def _lig_web_next(self):
+        if not self._lig_web_queue:
+            self._lig_finish("")
+            return
+        kind, url = self._lig_web_queue.pop(0)
+        page = QWebEnginePage(self)
+        self._lig_page = page
+        done = {"v": False}
+
+        def finish(html: str, err: str = ""):
+            if done["v"]:
+                return
+            done["v"] = True
+            self._lig_page = None
+            page.deleteLater()
+            msg = err
+            try:
+                if html and kind == "standings":
+                    rows = ks_data.lig_parse_standings(html)
+                    msg = ks_data.lig_validate_standings(rows)
+                    if not msg:
+                        self._lig_store_standings(rows)
+                elif html and kind == "matchday":
+                    md = ks_data.lig_parse_matchday(html)
+                    msg = ks_data.lig_validate_matchday(md)
+                    if not msg:
+                        self._lig_store_matchday(md)
+                elif not msg:
+                    msg = "sayfa boş geldi"
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)
+            if msg:
+                self._lig_web_error = msg
+            self._lig_web_next()
+
+        def loaded(ok: bool):
+            if not ok:
+                finish("", "Transfermarkt sayfası yüklenemedi")
+                return
+            QTimer.singleShot(1500, lambda: page.toHtml(lambda h: finish(h or "")))
+
+        page.loadFinished.connect(loaded)
+        QTimer.singleShot(45000, lambda: finish("", "zaman aşımı"))
+        page.load(QUrl(url))
+
+    def _lig_finish(self, err: str):
+        err = err or getattr(self, "_lig_web_error", "")
+        self._lig_web_error = ""
+        ids = {r["id"] for r in self._lig.get("standings", [])}
+        for md in self._lig.get("matchdays", {}).values():
+            for m in md.get("matches", []):
+                ids.update((m["home"]["id"], m["away"]["id"]))
+        missing = [i for i in ids if not ks_data.lig_crest_path(i).is_file()]
+        if missing and (self._lig_crest_worker is None or not self._lig_crest_worker.isRunning()):
+            cw = CrestWorker(missing, self)
+            cw.done_signal.connect(lambda n: self._lig_render() if n else None)
+            self._lig_crest_worker = cw
+            cw.start()
+        self._lig_render(error=err)
+
+    def _lig_store_standings(self, rows: list):
+        self._lig["standings"] = rows
+        self._lig["fetched"] = datetime.now().isoformat(timespec="seconds")
+        ks_data.lig_save(self._lig)
+
+    def _lig_store_matchday(self, md: dict):
+        n = md.get("matchday")
+        if not n:
+            return
+        md = dict(md)
+        md["fetched"] = datetime.now().isoformat(timespec="seconds")
+        self._lig.setdefault("matchdays", {})[str(n)] = md
+        if md.get("season"):
+            self._lig["season"] = md["season"]
+        if self._lig_view_md is None:
+            self._lig_view_md = n
+            self._lig["current_md"] = n
+        if "fetched" not in self._lig:
+            self._lig["fetched"] = md["fetched"]
+        ks_data.lig_save(self._lig)
+
+    def _lig_step(self, delta: int):
+        n = (self._lig_view_md or self._lig.get("current_md") or 1) + delta
+        if not 1 <= n <= ks_data.LIG_MAX_MATCHDAY:
+            return
+        self._lig_view_md = n
+        self._lig_render()
+        if str(n) not in self._lig.get("matchdays", {}):
+            self._lig_refresh(force=False, matchday=n)
+
+    def _lig_goto_current(self):
+        self._lig_view_md = None   # None → Transfermarkt'ın "güncel hafta" sayfası çekilir
+        self._lig_render()
+        self._lig_refresh(force=True)
+
+    def _lig_render(self, error: str = ""):
+        self._lig_render_standings()
+        self._lig_render_matchday()
+        age = self._lig_age_min()
+        if error:
+            when = ""
+            try:
+                when = datetime.fromisoformat(self._lig["fetched"]).strftime("%d.%m %H:%M")
+            except (KeyError, ValueError, TypeError):
+                pass
+            self.lig_status.setText(f"Güncellenemedi ({error})" + (f" · son veri {when}" if when else ""))
+        elif age is None:
+            self.lig_status.setText("")
+        else:
+            stamp = datetime.fromisoformat(self._lig["fetched"]).strftime("%H:%M")
+            self.lig_status.setText(f"Transfermarkt · {stamp}")
+
+    def _lig_cell(self, text: str, width: int, bold: bool = False, color: str = "", align=Qt.AlignmentFlag.AlignCenter):
+        lab = QLabel(text)
+        lab.setFixedWidth(width)
+        lab.setAlignment(align | Qt.AlignmentFlag.AlignVCenter)
+        lab.setStyleSheet(f"color: {color or K_SOFT}; font-weight: {700 if bold else 500}; background: transparent; border: none;")
+        return lab
+
+    def _lig_render_standings(self):
+        clear_layout(self.lig_table)
+        rows = self._lig.get("standings") or []
+        if not rows:
+            empty = QLabel("Puan durumu henüz yüklenmedi.")
+            empty.setObjectName("emptyHint")
+            self.lig_table.addWidget(empty)
+            self.lig_table.addStretch(1)
+            return
+        head = QHBoxLayout()
+        head.setContentsMargins(10, 0, 10, 0)
+        head.setSpacing(8)
+        head.addSpacing(4 + 8)
+        head.addWidget(self._lig_cell("#", 24, color=K_MUTED))
+        head.addSpacing(28 + 8)
+        name_h = QLabel("TAKIM")
+        name_h.setStyleSheet(f"color: {K_MUTED}; font-size: 11px; font-weight: 700; background: transparent;")
+        head.addWidget(name_h, 1)
+        for t, w in (("O", 30), ("G", 30), ("B", 30), ("M", 30), ("AV", 40), ("P", 40)):
+            head.addWidget(self._lig_cell(t, w, True, K_MUTED))
+        hw = QWidget()
+        hw.setLayout(head)
+        self.lig_table.addWidget(hw)
+        for r in rows:
+            own = r["id"] == ks_data.TM_CLUB_ID
+            fr = QFrame()
+            fr.setFixedHeight(38)
+            fr.setStyleSheet(f"QFrame {{ background: {K_GREEN_BG}; border: 1px solid #1F5A42; border-radius: 10px; }}" if own
+                             else "QFrame { background: transparent; border: none; border-bottom: 1px solid #16241D; }")
+            h = QHBoxLayout(fr)
+            h.setContentsMargins(10, 0, 10, 0)
+            h.setSpacing(8)
+            bar = QFrame()
+            bar.setFixedSize(4, 20)
+            bar.setStyleSheet(f"background: {r['zone'] or 'transparent'}; border: none; border-radius: 2px;")
+            h.addWidget(bar)
+            h.addWidget(self._lig_cell(str(r["rank"]), 24, True, K_GREEN_HI if own else K_TEXT))
+            crest = self._lig_crest(r["id"], r["name"], 24)
+            crest.setStyleSheet(crest.styleSheet() + " border: none;")
+            h.addWidget(crest)
+            name = QLabel(r["name"])
+            name.setStyleSheet(f"color: {K_TEXT}; font-weight: {700 if own else 600}; background: transparent; border: none;")
+            h.addWidget(name, 1)
+            gd = r["gd"]
+            vals = [(str(r["played"]), 30, False, ""), (str(r["won"] if r["won"] is not None else "–"), 30, False, ""),
+                    (str(r["draw"] if r["draw"] is not None else "–"), 30, False, ""),
+                    (str(r["lost"] if r["lost"] is not None else "–"), 30, False, ""),
+                    (f"{gd:+d}" if gd else "0", 40, False, K_GREEN_HI if gd > 0 else (K_RED_HI if gd < 0 else K_MUTED)),
+                    (str(r["pts"]), 40, True, K_TEXT)]
+            for text, w, bold, col in vals:
+                h.addWidget(self._lig_cell(text, w, bold, col))
+            self.lig_table.addWidget(fr)
+        self.lig_table.addStretch(1)
+
+    def _lig_render_matchday(self):
+        clear_layout(self.lig_matches)
+        n = self._lig_view_md or self._lig.get("current_md")
+        md = self._lig.get("matchdays", {}).get(str(n)) if n else None
+        cur = self._lig.get("current_md")
+        label = f"{n}. Hafta" if n else "Haftanın maçları"
+        if n and cur and n == cur:
+            label += "  ·  güncel"
+        self.lig_md_title.setText(label)
+        self.lig_prev.setEnabled(bool(n and n > 1))
+        self.lig_next.setEnabled(bool(n and n < ks_data.LIG_MAX_MATCHDAY))
+        if not md:
+            empty = QLabel("Bu haftanın maçları yükleniyor…" if n else "Maçlar henüz yüklenmedi.")
+            empty.setObjectName("emptyHint")
+            self.lig_matches.addWidget(empty)
+            self.lig_matches.addStretch(1)
+            return
+        last_day = None
+        for m in md["matches"]:
+            if m["date"] != last_day:
+                last_day = m["date"]
+                try:
+                    d = date.fromisoformat(m["date"])
+                    day_text = f"{DAYS_TR[d.weekday()]} · {d.day} {TURKISH_MONTHS[d.month]}"
+                except ValueError:
+                    day_text = m["date"]
+                if self.lig_matches.count():
+                    self.lig_matches.addSpacing(8)
+                self.lig_matches.addWidget(self._section_label(day_text))
+            self.lig_matches.addWidget(self._lig_match_row(m))
+        self.lig_matches.addStretch(1)
+
+    def _lig_match_row(self, m: dict) -> QFrame:
+        own = ks_data.TM_CLUB_ID in (m["home"]["id"], m["away"]["id"])
+        fr = QFrame()
+        fr.setObjectName("matchItem")
+        fr.setProperty("selected", own)
+        fr.setFixedHeight(50)
+        h = QHBoxLayout(fr)
+        h.setContentsMargins(12, 0, 12, 0)
+        h.setSpacing(10)
+
+        def name_label(team: dict, right: bool) -> QLabel:
+            lab = QLabel(team["name"])
+            lab.setMinimumWidth(0)
+            lab.setAlignment((Qt.AlignmentFlag.AlignRight if right else Qt.AlignmentFlag.AlignLeft) | Qt.AlignmentFlag.AlignVCenter)
+            strong = team["id"] == ks_data.TM_CLUB_ID
+            lab.setStyleSheet(f"color: {K_GREEN_HI if strong else K_TEXT}; font-weight: {700 if strong else 600}; "
+                              f"background: transparent; border: none;")
+            return lab
+
+        h.addWidget(name_label(m["home"], True), 1)
+        hc = self._lig_crest(m["home"]["id"], m["home"]["name"], 28)
+        h.addWidget(hc)
+        live = "live" in (m.get("status") or "")
+        if m.get("score"):
+            col = K_AMBER if live else K_TEXT
+            center = QLabel(m["score"].replace(":", " : "))
+            center.setStyleSheet(f"color: {col}; font-size: 15px; font-weight: 800; background: transparent; border: none;")
+        else:
+            center = QLabel(m.get("time") or "—")
+            center.setStyleSheet(f"color: {K_MUTED}; font-size: 13px; font-weight: 700; background: transparent; border: none;")
+        center.setFixedWidth(64)
+        center.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h.addWidget(center)
+        ac = self._lig_crest(m["away"]["id"], m["away"]["name"], 28)
+        h.addWidget(ac)
+        h.addWidget(name_label(m["away"], False), 1)
+        return fr
 
     def _refresh_matches_page(self):
         upcoming = get_upcoming_fixtures()
