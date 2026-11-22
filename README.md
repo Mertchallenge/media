@@ -128,3 +128,7 @@ aralıklarla (genelde 15+ dk) tazelenir.
 
 ## Süper Lig (v1.7.0)
 Maçlar sayfasının üstündeki "Süper Lig" anahtarı puan durumunu ve haftanın maçlarını gösterir (takım logolarıyla). Veri Transfermarkt'tan çekilir, `lig.json` olarak önbelleğe alınır (20 dakikadan eskiyse açılışta yenilenir; "Yenile" ile elle de çekilir). `‹ ›` ile hafta hafta gezilir, "Güncel hafta" bugüne döner. Logolar ilk seferde `lig_logolari/` klasörüne inilir; inemezse yerleşik logo ya da kısaltma rozeti gösterilir. Kocaelispor satırı/maçı yeşil vurgulanır.
+
+## Ayıklama belleği (v1.7.6)
+Yüz tanıma kütüphanesi uzun ayıklamalarda fotoğraf başına ~100 MB bellek sızdırıyordu (41 GB'a çıkabiliyordu). Yüz analizi artık uygulamanın kendisini `--face-worker` ile başlatan ayrı bir alt işlemde çalışır; her 30 fotoğrafta (veya 4,5 GB'ı aşınca) yedek işlem devreye girer, eskisi kapanır ve bellek geri verilir. Alt işlem başlamazsa eski yönteme düşülür; zorla eski yöntem için `MEDIASTAFFKS_INPROC=1`. Günlükte "Analiz işlemi belleği" satırları görünür.
+

@@ -637,6 +637,232 @@ def lig_download_crests(ids, ssl_context=None, timeout: int = 20) -> int:
     return got
 
 
+# ==========================================================================================
+# AYRI İŞLEM MOTORU: ağır (yüz analizi) işi alt işlemde çalıştırıp belli aralıkla yeniler
+# (kütüphane içindeki bellek sızıntısına karşı). Protokol: soket üzerinden "uzunluk + pickle" mesajları.
+# ==========================================================================================
+import pickle
+import socket
+import struct
+import subprocess
+import threading
+import traceback as _traceback
+
+ENGINE_RECYCLE_EVERY = 30      # bu kadar fotoğraftan sonra alt işlem yenilenir
+ENGINE_SPARE_AT = 10           # bu sayıdan sonra yedek alt işlem arka planda hazırlanmaya başlar
+ENGINE_RSS_LIMIT_MB = 4500     # alt işlem belleği bunu aşarsa erkenden yenilenir
+
+
+def _eng_send(sock, obj):
+    data = pickle.dumps(obj, protocol=4)
+    sock.sendall(struct.pack(">I", len(data)) + data)
+
+
+def _eng_recvn(sock, n):
+    chunks = []
+    while n > 0:
+        chunk = sock.recv(min(n, 1 << 20))
+        if not chunk:
+            raise EOFError("bağlantı kapandı")
+        chunks.append(chunk)
+        n -= len(chunk)
+    return b"".join(chunks)
+
+
+def _eng_recv(sock):
+    (n,) = struct.unpack(">I", _eng_recvn(sock, 4))
+    return pickle.loads(_eng_recvn(sock, n))
+
+
+def engine_serve(fd: int, make_handler) -> int:
+    """ALT İŞLEM tarafı: ("init", yük) → make_handler(yük, log) ile işleyici kurar; ("analyze", yol) → işleyici(yol)."""
+    sock = socket.socket(fileno=fd)
+    try:
+        kind, payload = _eng_recv(sock)
+        handler = make_handler(payload, lambda m, lvl="info": _eng_send(sock, ("log", m, lvl)))
+        _eng_send(sock, ("ready", None))
+    except EOFError:
+        return 0
+    except Exception:  # noqa: BLE001
+        try:
+            _eng_send(sock, ("error", _traceback.format_exc()))
+        except Exception:  # noqa: BLE001
+            pass
+        return 1
+    while True:
+        try:
+            msg = _eng_recv(sock)
+        except EOFError:
+            return 0
+        if msg[0] == "quit":
+            return 0
+        if msg[0] == "analyze":
+            try:
+                reply = ("result", handler(msg[1]))
+            except Exception as e:  # noqa: BLE001
+                reply = ("photo_error", f"{type(e).__name__}: {e}")
+            try:
+                _eng_send(sock, reply)
+            except OSError:
+                return 0
+
+
+class EngineError(RuntimeError):
+    """Alt işlem başlatılamadı / öldü / yanıt vermedi."""
+
+
+class PhotoError(RuntimeError):
+    """Alt işlem çalışıyor ama bu fotoğrafı işleyemedi (bozuk dosya vb.)."""
+
+
+def _rss_mb(pid) -> float:
+    try:
+        out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True, timeout=3).stdout.strip()
+        return int(out) / 1024.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+class _EngineChild:
+    def __init__(self, cmd_builder, init_payload, log, ready_timeout=100, call_timeout=180):
+        self.call_timeout = call_timeout
+        parent_sock, child_sock = socket.socketpair()
+        try:
+            self.proc = subprocess.Popen(cmd_builder(child_sock.fileno()), pass_fds=(child_sock.fileno(),),
+                                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:  # noqa: BLE001
+            parent_sock.close()
+            child_sock.close()
+            raise EngineError(f"alt işlem başlatılamadı: {e}") from e
+        child_sock.close()
+        self.sock = parent_sock
+        self.sock.settimeout(ready_timeout)
+        try:
+            _eng_send(self.sock, ("init", init_payload))
+            while True:
+                msg = _eng_recv(self.sock)
+                if msg[0] == "log":
+                    log(msg[1], msg[2])
+                elif msg[0] == "ready":
+                    break
+                elif msg[0] == "error":
+                    raise EngineError(msg[1].strip().splitlines()[-1] if msg[1] else "bilinmeyen hata")
+        except EngineError:
+            self.close()
+            raise
+        except Exception as e:  # noqa: BLE001
+            self.close()
+            raise EngineError(f"alt işlem hazırlanamadı: {e.__class__.__name__}: {e}") from e
+        self.sock.settimeout(call_timeout)
+
+    def analyze(self, path):
+        try:
+            _eng_send(self.sock, ("analyze", path))
+            msg = _eng_recv(self.sock)
+        except Exception as e:  # noqa: BLE001
+            raise EngineError(f"alt işlem yanıt vermedi: {e.__class__.__name__}: {e}") from e
+        if msg[0] == "result":
+            return msg[1]
+        if msg[0] == "photo_error":
+            raise PhotoError(msg[1])
+        raise EngineError(f"beklenmeyen yanıt: {msg[0]}")
+
+    def rss_mb(self) -> float:
+        return _rss_mb(self.proc.pid)
+
+    def close(self):
+        try:
+            _eng_send(self.sock, ("quit",))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.sock.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+class EngineProc:
+    """ANA İŞLEM tarafı: sıcak bir alt işlem + arka planda hazırlanan yedek; kota dolunca anında değiştirir."""
+
+    def __init__(self, cmd_builder, init_payload, log, recycle_every=None, spare_at=None, rss_limit_mb=None):
+        self.cmd_builder = cmd_builder
+        self.init_payload = init_payload
+        self.log = log
+        self.recycle_every = recycle_every or ENGINE_RECYCLE_EVERY
+        self.spare_at = spare_at if spare_at is not None else ENGINE_SPARE_AT
+        self.rss_limit_mb = rss_limit_mb or ENGINE_RSS_LIMIT_MB
+        self.cur = None
+        self.spare = None
+        self._spare_thread = None
+        self._spare_error = None
+        self.count = 0
+        self.generation = 0
+        self.last_rss = 0.0
+
+    def _spawn(self):
+        return _EngineChild(self.cmd_builder, self.init_payload, self.log)
+
+    def start(self):
+        self.cur = self._spawn()
+        self.generation = 1
+        self.count = 0
+
+    def _spare_job(self):
+        try:
+            self.spare = self._spawn()
+        except Exception as e:  # noqa: BLE001
+            self._spare_error = e
+
+    def _prepare_spare(self):
+        if self.spare is None and self._spare_thread is None:
+            self._spare_error = None
+            self._spare_thread = threading.Thread(target=self._spare_job, daemon=True)
+            self._spare_thread.start()
+
+    def _swap(self):
+        if self._spare_thread is not None:
+            self._spare_thread.join(timeout=240)
+            self._spare_thread = None
+        new = self.spare
+        self.spare = None
+        if new is None:
+            new = self._spawn()          # yedek hazırlanamadıysa (bloklayarak) yeniden başlat
+        old, self.cur = self.cur, new
+        self.generation += 1
+        self.count = 0
+        if old is not None:
+            old.close()
+
+    def analyze(self, path):
+        if self.count >= self.spare_at:
+            self._prepare_spare()
+        try:
+            res = self.cur.analyze(path)
+        except EngineError:
+            self._swap()                  # öldüyse / yanıt vermediyse tazesiyle bir kez daha dene
+            res = self.cur.analyze(path)
+        self.count += 1
+        if self.count % 5 == 0 or self.count >= self.recycle_every:
+            self.last_rss = self.cur.rss_mb()
+        if self.count >= self.recycle_every or (self.last_rss and self.last_rss > self.rss_limit_mb):
+            self._swap()
+        return res
+
+    def close(self):
+        for child in (self.cur, self.spare):
+            if child is not None:
+                child.close()
+        self.cur = self.spare = None
+
+
 import hashlib
 from datetime import datetime, timedelta
 

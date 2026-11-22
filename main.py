@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.7.5"
+APP_VERSION = "1.7.6"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Bellek sızıntısı teşhisi: ayıklamanın 4. fotoğrafında kısa bir ölçüm deneyi çalışır ve sonucu günlüğe yazar."
+UPDATE_NOTES = "Ayıklamadaki bellek şişmesi için kalıcı çözüm: yüz analizi ayrı bir işlemde çalışır ve her 30 fotoğrafta yenilenir; bellek sabit kalır. Alt işlem başlamazsa eski yönteme düşer."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -408,6 +408,36 @@ def _mem_experiment(face_app, img, log):
             f"tam analiz {b3 - b2:+.0f} MB · cv2 resize+blob {b4 - b3:+.0f} MB", "warn")
     except Exception as e:  # noqa: BLE001
         log(f"[deney] çalışmadı: {e}", "warn")
+
+
+def _face_engine_handler_factory(payload, log):
+    """ALT İŞLEM: yüz motorunu kurar; her fotoğraf için okuma + tespit + eşleştirme yapıp sonucu döndürür."""
+    face_app, _prov, _pack = build_face_analyzer(log_callback=log)
+    ref_db = payload["ref_db"]
+    thr, margin, quality = payload["threshold"], payload["margin"], payload["quality_filter"]
+
+    def handle(path):
+        img = imread_unicode(path)
+        if img is None:
+            raise ValueError("Görüntü okunamadı / bozuk dosya")
+        h, w = img.shape[:2]
+        faces, proc_img = detect_faces_adaptive(face_app, img)
+        finfo = {}
+        matches, reason, score, bg = identify_all_faces(faces, proc_img, ref_db, thr, margin, quality, finfo)
+        return {"matches": matches, "reason": reason, "score": float(score or 0.0), "bg": bg, "finfo": finfo,
+                "n_faces": len(faces), "size": (w, h), "rss": process_rss_mb()}
+    return handle
+
+
+def run_face_worker(fd: int) -> int:
+    return ks_data.engine_serve(fd, _face_engine_handler_factory)
+
+
+def _face_engine_cmd(fd: int) -> list:
+    """Alt işlemi başlatan komut: paketlenmiş uygulamada uygulamanın kendisi, geliştirmede main.py."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, f"--face-worker={fd}"]
+    return [sys.executable, os.path.abspath(__file__), f"--face-worker={fd}"]
 
 
 MEM_SOFT_LIMIT_MB = 5000     # bunu aşarsa yüz tanıma motoru yeniden kurulur (olası ONNX/CoreML sızıntısı)
@@ -992,6 +1022,7 @@ class ExtractionWorker(QThread):
             "kaleci": 0, "karisik": 0, "output_folder": "", "per_player": {}, "csv_path": "",
         }
         csv_rows = []  # REPORT_HEADER sırasıyla: dosya, sonuç, oyuncu, skor, not, kalite, adaylar, konum
+        engine = None
         try:
             self.log_signal.emit("Yüz tanıma motoru başlatılıyor (antelopev2 → buffalo_l otomatik düşüş)...", "info")
             face_app, (det_providers, rec_providers), model_pack = build_face_analyzer(
@@ -1026,6 +1057,26 @@ class ExtractionWorker(QThread):
             stats["toplam"] = len(media_paths)
             self.log_signal.emit(f"Ayıklanacak medya klasöründe {len(media_paths)} fotoğraf bulundu.", "info")
 
+            # Yüz analizi ayrı bir alt işlemde yürür ve belli aralıkla yenilenir: kütüphane içi bellek sızıntısı
+            # (fotoğraf başına ~100 MB) uygulamayı şişirmesin. Başlatılamazsa eski yönteme (aynı işlem) düşülür.
+            if os.environ.get("MEDIASTAFFKS_INPROC") != "1":
+                try:
+                    self.log_signal.emit("Yüz analizi alt işlemi başlatılıyor…", "info")
+                    engine = ks_data.EngineProc(
+                        _face_engine_cmd,
+                        {"ref_db": ref_db, "threshold": self.threshold, "margin": self.margin,
+                         "quality_filter": self.quality_filter},
+                        lambda m, lvl="info": self.log_signal.emit(m, lvl))
+                    engine.start()
+                    face_app = None
+                    gc.collect()
+                    self.log_signal.emit("Yüz analizi ayrı işlemde çalışıyor (bellek için düzenli yenilenir).", "success")
+                except Exception as e:  # noqa: BLE001
+                    engine = None
+                    log_error(f"Alt işlem motoru başlatılamadı: {e}")
+                    self.log_signal.emit(f"Alt işlem başlatılamadı ({e}); aynı işlemde devam ediliyor.", "warn")
+            engine_fail_streak = 0
+
             goalkeeper_pool_clean = {strip_accents_upper(g) for g in (self.goalkeeper_names or GOALKEEPER_POOL)}
 
             for i, path in enumerate(media_paths, start=1):
@@ -1037,7 +1088,7 @@ class ExtractionWorker(QThread):
                 _remember_photo(path, i, stats["toplam"])
                 if i % 25 == 0:
                     gc.collect()  # uzun koşularda bellek birikimini temizle
-                if i % 10 == 0:
+                if engine is None and i % 10 == 0:
                     rss = process_rss_mb()
                     if i % 25 == 0 and rss:
                         self.log_signal.emit(f"Bellek: {rss / 1024:.1f} GB ({i}/{stats['toplam']})", "info")
@@ -1060,26 +1111,36 @@ class ExtractionWorker(QThread):
                                 f"Şu ana kadarki sonuçlar kaydedilecek; uygulamayı kapatıp açıp kalan fotoğraflarla devam et.", "error")
                             log_error(f"Ayıklama bellek sınırında durduruldu: {rss:.0f} MB")
                             break
-                diag = i <= 6   # ilk fotoğraflarda hangi aşamada bellek arttığını günlüğe yaz (teşhis)
                 try:
-                    m0 = process_rss_mb() if diag else 0
-                    img = imread_unicode(path)
-                    if img is None:
-                        raise ValueError("Görüntü okunamadı / bozuk dosya")
-                    m1 = process_rss_mb() if diag else 0
-
-                    faces, proc_img = detect_faces_adaptive(face_app, img)
-                    m2 = process_rss_mb() if diag else 0
-                    finfo = {}
-                    matches, reject_reason, reject_score, bg_skipped = identify_all_faces(
-                        faces, proc_img, ref_db, self.threshold, self.margin, self.quality_filter, finfo)
-                    if i == 4:
-                        _mem_experiment(face_app, img, lambda m, lvl="info": self.log_signal.emit(m, lvl))
-                    if diag:
-                        m3 = process_rss_mb()
-                        self.log_signal.emit(
-                            f"[bellek teşhis #{i}] başlangıç {m0:.0f} MB · okuma {m1 - m0:+.0f} · tespit {m2 - m1:+.0f} · "
-                            f"eşleştirme {m3 - m2:+.0f} · resim {img.shape[1]}x{img.shape[0]} · yüz {len(faces)}", "info")
+                    if engine is not None:
+                        try:
+                            res = engine.analyze(path)
+                            engine_fail_streak = 0
+                        except ks_data.PhotoError as e:
+                            raise ValueError(str(e)) from e
+                        except ks_data.EngineError as e:
+                            engine_fail_streak += 1
+                            if engine_fail_streak >= 3:
+                                self.log_signal.emit(f"Yüz analizi alt işlemi tekrar tekrar çöktü ({e}); ayıklama durduruldu.", "error")
+                                log_error(f"Alt işlem art arda çöktü: {e}")
+                                break
+                            raise
+                        img = None   # küçük resim üretilmez (arayüzde kullanılmıyor)
+                        matches, reject_reason, reject_score, bg_skipped = (
+                            res["matches"], res["reason"], res["score"], res["bg"])
+                        finfo = res["finfo"]
+                        if i % 25 == 0:
+                            self.log_signal.emit(
+                                f"Analiz işlemi belleği: {res['rss'] / 1024:.1f} GB (yenileme #{engine.generation}) · "
+                                f"{i}/{stats['toplam']}", "info")
+                    else:
+                        img = imread_unicode(path)
+                        if img is None:
+                            raise ValueError("Görüntü okunamadı / bozuk dosya")
+                        faces, proc_img = detect_faces_adaptive(face_app, img)
+                        finfo = {}
+                        matches, reject_reason, reject_score, bg_skipped = identify_all_faces(
+                            faces, proc_img, ref_db, self.threshold, self.margin, self.quality_filter, finfo)
                     bg_note = f"arka plan/odak dışı {bg_skipped} yüz atlandı" if bg_skipped else "-"
 
                     if not matches:
@@ -1093,7 +1154,7 @@ class ExtractionWorker(QThread):
                                          "", cand_text, os.path.relpath(dest, output_root)))
                         self.log_signal.emit(f"[KARIŞIK] {reject_reason}: {filename}", "warn")
                         self.thumbnail_signal.emit(
-                            make_thumbnail_bytes(img), filename, f"KARIŞIK — {reject_reason}")
+                            make_thumbnail_bytes(img) if img is not None else b"", filename, f"KARIŞIK — {reject_reason}")
                     else:
                         # Karedeki tanınan HER oyuncu fotoğrafı kendi klasörüne alır (skora göre sıralı).
                         keeper_copied = False
@@ -1124,7 +1185,7 @@ class ExtractionWorker(QThread):
                                     f"[{matched_name}] eşleşti (skor={score:.2f}): {filename}", "success")
                                 labels.append(f"{matched_name} ({score:.2f})")
                         stats["basarili"] += 1  # fotoğraf sayısı; oyuncu başına kopya sayısı per_player'da
-                        self.thumbnail_signal.emit(make_thumbnail_bytes(img), filename, " · ".join(labels))
+                        self.thumbnail_signal.emit(make_thumbnail_bytes(img) if img is not None else b"", filename, " · ".join(labels))
 
                 except Exception as e:
                     try:
@@ -1157,6 +1218,12 @@ class ExtractionWorker(QThread):
         except Exception as e:
             tb = traceback.format_exc()
             self.log_signal.emit(f"Beklenmeyen kritik hata: {e}\n{tb}", "error")
+        finally:
+            try:
+                if engine is not None:
+                    engine.close()
+            except Exception:  # noqa: BLE001
+                pass
 
         self.finished_signal.emit(stats)
 
@@ -14396,6 +14463,9 @@ def _install_error_hooks():
 
 
 def main():
+    for _a in sys.argv[1:]:
+        if _a.startswith("--face-worker="):      # ayıklama alt işlemi: arayüz açmadan yüz analizi yapar
+            sys.exit(run_face_worker(int(_a.split("=", 1)[1])))
     if "--selftest" in sys.argv:
         sys.exit(run_selftest())
     _install_error_hooks()
