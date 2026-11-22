@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Maçlar sayfasına Süper Lig eklendi: puan durumu ve haftanın maçları (takım logolarıyla, Transfermarkt'tan; hafta hafta gezinebilirsin)."
+UPDATE_NOTES = "Bellek koruması: ayıklama sırasında bellek şişerse yüz tanıma motoru yeniden kurulur, aşırı büyürse güvenle durur; bellek kullanımı hata.log'a not edilir."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -368,6 +368,20 @@ def list_image_files(root_folder: str):
             if os.path.splitext(fn)[1].lower() in IMAGE_EXTENSIONS:
                 result.append(os.path.join(dirpath, fn))
     return result
+
+
+def process_rss_mb() -> float:
+    """Bu işlemin şu anki gerçek bellek kullanımı (MB); okunamazsa 0."""
+    try:
+        out = subprocess.run(["ps", "-o", "rss=", "-p", str(os.getpid())],
+                             capture_output=True, text=True, timeout=3).stdout.strip()
+        return int(out) / 1024.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+MEM_SOFT_LIMIT_MB = 5000     # bunu aşarsa yüz tanıma motoru yeniden kurulur (olası ONNX/CoreML sızıntısı)
+MEM_HARD_LIMIT_MB = 12000    # yeniden kurmaya rağmen bu aşılırsa ayıklama güvenle durdurulur
 
 
 def imread_unicode(path: str):
@@ -956,6 +970,29 @@ class ExtractionWorker(QThread):
                 _remember_photo(path, i, stats["toplam"])
                 if i % 25 == 0:
                     gc.collect()  # uzun koşularda bellek birikimini temizle
+                if i % 10 == 0:
+                    rss = process_rss_mb()
+                    if i % 100 == 0 and rss:
+                        self.log_signal.emit(f"Bellek: {rss / 1024:.1f} GB ({i}/{stats['toplam']})", "info")
+                    if rss > MEM_SOFT_LIMIT_MB:
+                        self.log_signal.emit(f"Bellek {rss / 1024:.1f} GB'a çıktı — yüz tanıma motoru yeniden kuruluyor…", "warn")
+                        log_error(f"Ayıklama belleği {rss:.0f} MB ({i}/{stats['toplam']}), motor yeniden kuruldu")
+                        try:
+                            del face_app
+                            gc.collect()
+                            face_app, _prov, _pack = build_face_analyzer(
+                                log_callback=lambda m, lvl="info": self.log_signal.emit(m, lvl))
+                            gc.collect()
+                        except Exception as e:  # noqa: BLE001
+                            self.log_signal.emit(f"Motor yeniden kurulamadı: {e}", "error")
+                            break
+                        rss = process_rss_mb()
+                        if rss > MEM_HARD_LIMIT_MB:
+                            self.log_signal.emit(
+                                f"Bellek yine {rss / 1024:.1f} GB — Mac'i yormamak için ayıklama durduruldu. "
+                                f"Şu ana kadarki sonuçlar kaydedilecek; uygulamayı kapatıp açıp kalan fotoğraflarla devam et.", "error")
+                            log_error(f"Ayıklama bellek sınırında durduruldu: {rss:.0f} MB")
+                            break
                 try:
                     img = imread_unicode(path)
                     if img is None:
@@ -7870,6 +7907,16 @@ class MainWindow(QMainWindow):
         self._update_tray_tooltip()
 
     def _update_tray_tooltip(self):
+        try:   # bellek izleme: her +1 GB artışta hata.log'a not düş (sızıntıyı yakalamak için)
+            rss = process_rss_mb()
+            step = int(rss // 1024)
+            if step >= 3 and step > getattr(self, "_rss_logged_step", 0):
+                self._rss_logged_step = step
+                log_error(f"Bellek izleme: uygulama {rss / 1024:.1f} GB kullanıyor (sayfa: {self.stack.currentIndex() if hasattr(self, 'stack') else '?'})")
+            elif step < 3:
+                self._rss_logged_step = 0
+        except Exception:  # noqa: BLE001
+            pass
         try:   # gün değişimi / "son etkinlikten 30 dk sonra yarın" geçişinde ana sayfa kartını tazele
             vd = program_view_date()
             if getattr(self, "_prog_view_seen", vd) != vd:
