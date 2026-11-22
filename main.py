@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.7.2"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Bellek koruması: ayıklama sırasında bellek şişerse yüz tanıma motoru yeniden kurulur, aşırı büyürse güvenle durur; bellek kullanımı hata.log'a not edilir."
+UPDATE_NOTES = "Ayıklamada bellek şişmesi düzeltildi: yüz tanıma artık CoreML yerine CPU'da çalışıyor (olası sızıntı kaynağı kapatıldı); bellek koruması da duruyor."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -657,6 +657,11 @@ def build_face_analyzer(log_callback=None):
 
     detection_providers = ["CPUExecutionProvider"]
     accel_order = ["CoreMLExecutionProvider", "CUDAExecutionProvider"]
+    # CoreML (Neural Engine) uzun ayıklamalarda onnxruntime'ta bellek sızdırabiliyor (41 GB'a çıkan vaka) →
+    # varsayılan olarak KAPALI; M-serisi CPU tanıma modelini zaten hızlı çalıştırıyor. Açmak için ortam
+    # değişkeni: MEDIASTAFFKS_COREML=1
+    if os.environ.get("MEDIASTAFFKS_COREML") != "1":
+        accel_order = []
     recognition_providers = [p for p in accel_order if p in available] + ["CPUExecutionProvider"]
 
     last_error = None
