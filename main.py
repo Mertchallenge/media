@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.7.2"
+APP_VERSION = "1.7.3"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Ayıklamada bellek şişmesi düzeltildi: yüz tanıma artık CoreML yerine CPU'da çalışıyor (olası sızıntı kaynağı kapatıldı); bellek koruması da duruyor."
+UPDATE_NOTES = "Ayıklamada bellek şişmesine ikinci önlem: onnxruntime bellek havuzu kapatıldı, motor yeniden kurulunca eski bellek gerçekten boşalıyor, ilk fotoğraflarda bellek teşhisi günlüğe yazılıyor."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -626,6 +626,32 @@ def model_pack_files_exist(pack: str) -> bool:
     return os.path.isdir(folder) and any(f.lower().endswith(".onnx") for f in os.listdir(folder))
 
 
+def _patch_ort_sessions():
+    """onnxruntime CPU bellek havuzunu (arena) ve bellek-deseni önbelleğini kapatır: büyük karelerle uzun
+    ayıklamada bellek şişmesine karşı. insightface oturumları kendi başına açtığı için InferenceSession
+    oluşturulurken varsayılan seçenekler araya girilerek verilir."""
+    try:
+        import onnxruntime as ort
+        if getattr(ort.InferenceSession, "_mskks_patched", False):
+            return
+        orig_init = ort.InferenceSession.__init__
+
+        def patched(self, path_or_bytes, sess_options=None, *args, **kwargs):
+            if sess_options is None:
+                sess_options = ort.SessionOptions()
+            try:
+                sess_options.enable_cpu_mem_arena = False
+                sess_options.enable_mem_pattern = False
+            except Exception:  # noqa: BLE001
+                pass
+            orig_init(self, path_or_bytes, sess_options, *args, **kwargs)
+
+        ort.InferenceSession.__init__ = patched
+        ort.InferenceSession._mskks_patched = True
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def build_face_analyzer(log_callback=None):
     """
     InsightFace FaceAnalysis nesnesini oluşturur.
@@ -646,6 +672,7 @@ def build_face_analyzer(log_callback=None):
     Döner: (face_app, (detection_providers, recognition_providers), kullanılan_model_paketi)
     """
     log = log_callback or (lambda *a, **k: None)
+    _patch_ort_sessions()
     from insightface.app import FaceAnalysis
     from insightface.model_zoo import model_zoo
 
@@ -945,6 +972,8 @@ class ExtractionWorker(QThread):
                 log_callback=lambda m, lvl="info": self.log_signal.emit(m, lvl))
             ref_db = ref_manager.load_or_build(self.ref_folder, force_rebuild=self.force_rebuild_cache)
 
+            ref_manager = None   # eski face_app'i tutmasın (motor yeniden kurulunca bellek gerçekten boşalsın)
+            gc.collect()
             if not ref_db:
                 self.log_signal.emit("Referans veritabanı boş! İşlem durduruldu.", "error")
                 self.finished_signal.emit(stats)
@@ -998,15 +1027,24 @@ class ExtractionWorker(QThread):
                                 f"Şu ana kadarki sonuçlar kaydedilecek; uygulamayı kapatıp açıp kalan fotoğraflarla devam et.", "error")
                             log_error(f"Ayıklama bellek sınırında durduruldu: {rss:.0f} MB")
                             break
+                diag = i <= 6   # ilk fotoğraflarda hangi aşamada bellek arttığını günlüğe yaz (teşhis)
                 try:
+                    m0 = process_rss_mb() if diag else 0
                     img = imread_unicode(path)
                     if img is None:
                         raise ValueError("Görüntü okunamadı / bozuk dosya")
+                    m1 = process_rss_mb() if diag else 0
 
                     faces, proc_img = detect_faces_adaptive(face_app, img)
+                    m2 = process_rss_mb() if diag else 0
                     finfo = {}
                     matches, reject_reason, reject_score, bg_skipped = identify_all_faces(
                         faces, proc_img, ref_db, self.threshold, self.margin, self.quality_filter, finfo)
+                    if diag:
+                        m3 = process_rss_mb()
+                        self.log_signal.emit(
+                            f"[bellek teşhis #{i}] başlangıç {m0:.0f} MB · okuma {m1 - m0:+.0f} · tespit {m2 - m1:+.0f} · "
+                            f"eşleştirme {m3 - m2:+.0f} · resim {img.shape[1]}x{img.shape[0]} · yüz {len(faces)}", "info")
                     bg_note = f"arka plan/odak dışı {bg_skipped} yüz atlandı" if bg_skipped else "-"
 
                     if not matches:
