@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.7.3"
+APP_VERSION = "1.7.4"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Ayıklamada bellek şişmesine ikinci önlem: onnxruntime bellek havuzu kapatıldı, motor yeniden kurulunca eski bellek gerçekten boşalıyor, ilk fotoğraflarda bellek teşhisi günlüğe yazılıyor."
+UPDATE_NOTES = "Ayıklama hızlandı ve bellek kullanımı azaldı: yüz motorunun kullanılmayan landmark / yaş-cinsiyet modelleri artık yüklenmiyor."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -702,7 +702,10 @@ def build_face_analyzer(log_callback=None):
         try:
             log(f"Model paketi deneniyor: {pack} ...", "info")
             # 1) Tüm alt modeller önce CPU ile kurulur (tespit modeli için zorunlu, güvenilir taban).
-            app = FaceAnalysis(name=pack, providers=detection_providers)
+            # Yalnızca tespit + tanıma modelleri yüklenir (3B/106 noktalı landmark ve yaş-cinsiyet modelleri kullanılmıyor):
+            # hem bellek hem hız kazancı, ayıklama sonucunu değiştirmez.
+            app = FaceAnalysis(name=pack, providers=detection_providers,
+                               allowed_modules=["detection", "recognition"])
             app.prepare(ctx_id=0, det_size=DETECTION_SIZE)
             try:
                 # Tespit duyarlılığını artır: yan açı / zor ışık / uzak çekimlerde daha
@@ -1006,7 +1009,7 @@ class ExtractionWorker(QThread):
                     gc.collect()  # uzun koşularda bellek birikimini temizle
                 if i % 10 == 0:
                     rss = process_rss_mb()
-                    if i % 100 == 0 and rss:
+                    if i % 25 == 0 and rss:
                         self.log_signal.emit(f"Bellek: {rss / 1024:.1f} GB ({i}/{stats['toplam']})", "info")
                     if rss > MEM_SOFT_LIMIT_MB:
                         self.log_signal.emit(f"Bellek {rss / 1024:.1f} GB'a çıktı — yüz tanıma motoru yeniden kuruluyor…", "warn")
