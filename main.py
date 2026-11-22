@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.7.4"
+APP_VERSION = "1.7.5"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Ayıklama hızlandı ve bellek kullanımı azaldı: yüz motorunun kullanılmayan landmark / yaş-cinsiyet modelleri artık yüklenmiyor."
+UPDATE_NOTES = "Bellek sızıntısı teşhisi: ayıklamanın 4. fotoğrafında kısa bir ölçüm deneyi çalışır ve sonucu günlüğe yazar."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -378,6 +378,36 @@ def process_rss_mb() -> float:
         return int(out) / 1024.0
     except Exception:  # noqa: BLE001
         return 0.0
+
+
+def _mem_experiment(face_app, img, log):
+    """TEŞHİS: aynı kare üzerinde parçaları ayrı ayrı 5'er kez çalıştırıp her birinin bellek artışını günlüğe yazar
+    (CLAHE / sadece yüz tespiti / tam analiz). Sızıntının hangi parçada olduğunu belirlemek için."""
+    try:
+        h, w = img.shape[:2]
+        k = MAX_DETECT_SIDE / float(max(h, w))
+        small = cv2.resize(img, (max(1, int(w * k)), max(1, int(h * k))), interpolation=cv2.INTER_AREA) if k < 1 else img
+        gc.collect()
+        b0 = process_rss_mb()
+        for _ in range(5):
+            enhance_image_for_detection(small)
+        b1 = process_rss_mb()
+        enh = enhance_image_for_detection(small)
+        det = getattr(face_app, "det_model", None) or face_app.models.get("detection")
+        for _ in range(5):
+            det.detect(enh, max_num=0, metric="default")
+        b2 = process_rss_mb()
+        for _ in range(5):
+            face_app.get(enh)
+        b3 = process_rss_mb()
+        for _ in range(5):
+            cv2.resize(enh, (960, 960))
+            cv2.dnn.blobFromImage(enh, 1.0 / 128, (960, 960), (127.5, 127.5, 127.5), swapRB=True)
+        b4 = process_rss_mb()
+        log(f"[deney] 5'er tekrar → CLAHE {b1 - b0:+.0f} MB · yalnız tespit {b2 - b1:+.0f} MB · "
+            f"tam analiz {b3 - b2:+.0f} MB · cv2 resize+blob {b4 - b3:+.0f} MB", "warn")
+    except Exception as e:  # noqa: BLE001
+        log(f"[deney] çalışmadı: {e}", "warn")
 
 
 MEM_SOFT_LIMIT_MB = 5000     # bunu aşarsa yüz tanıma motoru yeniden kurulur (olası ONNX/CoreML sızıntısı)
@@ -1043,6 +1073,8 @@ class ExtractionWorker(QThread):
                     finfo = {}
                     matches, reject_reason, reject_score, bg_skipped = identify_all_faces(
                         faces, proc_img, ref_db, self.threshold, self.margin, self.quality_filter, finfo)
+                    if i == 4:
+                        _mem_experiment(face_app, img, lambda m, lvl="info": self.log_signal.emit(m, lvl))
                     if diag:
                         m3 = process_rss_mb()
                         self.log_signal.emit(
