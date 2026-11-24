@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.7.6"
+APP_VERSION = "1.7.7"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Ayıklamadaki bellek şişmesi için kalıcı çözüm: yüz analizi ayrı bir işlemde çalışır ve her 30 fotoğrafta yenilenir; bellek sabit kalır. Alt işlem başlamazsa eski yönteme düşer."
+UPDATE_NOTES = "Yeni antrenman programları eklendi: 13. hafta Çorum FK (25–30 Kasım) ve 14. hafta Erzurumspor FK (1–8 Aralık)."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).

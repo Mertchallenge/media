@@ -118,7 +118,55 @@ def _prog_week() -> dict:
             "start": "2026-11-15", "end": "2026-11-24", "items": items}
 
 
-DEFAULT_PROGRAMS = [_prog_week()]
+def _prog_build(pid, subtitle, start, end, days) -> dict:
+    """days: {"2026-11-25": [(saat, başlık, tür), ...]} → program sözlüğü"""
+    items = [{"date": d, "time": t, "title": title, "kind": kind} for d, rows in days.items() for (t, title, kind) in rows]
+    items.sort(key=lambda i: (i["date"], i["time"] or "99:99"))
+    return {"id": pid, "title": "Antrenman Programı", "subtitle": subtitle, "coach": "Selçuk İnan",
+            "start": start, "end": end, "items": items}
+
+
+def _prog_week13() -> dict:   # 13- Çorum FK (25-30 Kasım 2026)
+    breakfast = lambda t: (t, "Kahvaltı (zorunlu)", "meal")
+    lunch = lambda t: (t, "Öğle yemeği (zorunlu)", "meal")
+    morning = [breakfast("11:00"), ("12:45", "Fitness / Gym", "gym"), ("13:00", "Antrenman", "training"), lunch("15:00")]
+    return _prog_build("2026-11-25", "13- Çorum FK", "2026-11-25", "2026-11-30", {
+        "2026-11-25": morning,
+        "2026-11-26": morning,
+        "2026-11-27": [("14:00", "Ara öğün", "meal"), ("15:30", "Fitness / Gym", "gym"),
+                       ("16:00", "Antrenman", "training"), ("18:00", "Akşam yemeği", "meal")],
+        "2026-11-28": [breakfast("11:00"), ("11:30", "Brunga tesisten havalimanına hareket", "camp"),
+                       ("12:30", "Hareket Çorum", "camp"), ("15:00", "Ara öğün", "meal"),
+                       ("18:00", "Aktivasyon", "gym"), ("19:00", "Akşam yemeği", "meal"), ("22:00", "Ara öğün", "meal")],
+        "2026-11-29": [("10:15", "Maç yemeği", "meal"), ("11:30", "Toplantı ve hareket", "meeting"),
+                       ("13:30", "Çorum FK - Kocaelispor", "match")],
+        "2026-11-30": [breakfast("12:00"), ("13:45", "Fitness / Gym", "gym"), ("14:00", "Antrenman", "training"),
+                       lunch("16:00")],
+    })
+
+
+def _prog_week14() -> dict:   # 14- Erzurumspor FK (1-8 Aralık 2026)
+    return _prog_build("2026-12-01", "14- Erzurumspor FK", "2026-12-01", "2026-12-08", {
+        "2026-12-01": [("15:00", "Ara öğün", "meal"), ("15:00", "Kamp başlar", "camp"), ("17:00", "Antrenman", "training"),
+                       ("19:00", "Akşam yemeği", "meal"), ("22:00", "Ara öğün", "meal")],
+        "2026-12-02": [("10:30", "Kahvaltı (zorunlu)", "meal"), ("14:30", "Maç yemeği", "meal"),
+                       ("15:45", "Toplantı ve hareket", "meeting"), ("18:00", "Kocaelispor - Serikspor", "match")],
+        "2026-12-03": [("11:00", "Kahvaltı (zorunlu)", "meal"), ("12:45", "Fitness / Gym", "gym"),
+                       ("13:00", "Antrenman", "training"), ("14:00", "Öğle yemeği (zorunlu)", "meal")],
+        "2026-12-04": [("14:00", "Ara öğün", "meal"), ("15:45", "Fitness / Gym", "gym"),
+                       ("16:00", "Antrenman", "training"), ("18:00", "Akşam yemeği", "meal")],
+        "2026-12-05": [("14:00", "Toplanma (zorunlu)", "camp"), ("14:30", "Antrenman", "training"),
+                       ("16:00", "Öğle yemeği (zorunlu)", "meal"), ("16:30", "Brunga tesisten havalimanına hareket", "camp"),
+                       ("18:20", "Hareket Erzurum", "camp"), ("20:30", "Akşam yemeği", "meal"), ("22:00", "Ara öğün", "meal")],
+        "2026-12-06": [("10:15", "Maç yemeği", "meal"), ("11:30", "Toplantı ve hareket", "meeting"),
+                       ("13:30", "Erzurumspor FK - Kocaelispor", "match"), ("20:55", "Hareket İstanbul", "camp")],
+        "2026-12-07": [("", "İzin", "off")],
+        "2026-12-08": [("13:00", "Kocaelispor Müze açılışı", "camp"), ("16:00", "Antrenman", "training"),
+                       ("18:00", "Akşam yemeği", "meal")],
+    })
+
+
+DEFAULT_PROGRAMS = [_prog_week(), _prog_week13(), _prog_week14()]
 
 
 DEFAULT_PLAYERS = [
