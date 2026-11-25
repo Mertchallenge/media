@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.7.10"
+APP_VERSION = "1.7.11"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Ayıklama iyileştirmesi: karenin asıl öznesi sırtı dönükken kenarda duran bulanık oyuncu artık kendi klasörüne girmiyor (DAHA FAZLASI klasörüne düşer)."
+UPDATE_NOTES = "Kenardaki odak dışı yüz kontrolü (v1.7.10) geri alındı; ayıklama önceki davranışına döndü."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -250,15 +250,6 @@ BG_MIN_SHARP_REL = 0.35              # Yüz netliği, karedeki en net yüzün en
 BG_EDGE_SHARP_BONUS = 0.35           # Kare merkezinden uzaklaştıkça istenen göreli netlik bu kadar artar
 BG_EDGE_DIST = 0.90                  # Normalize merkez uzaklığı (0=merkez, ~1=kenar) bu değerde ek istek tam olur
 BG_MIN_SIZE_REL = 0.35               # Yüz boyutu, karedeki en büyük yüzün en az bu oranı olmalı
-
-# KENARDAKİ ODAK DIŞI TEK YÜZ: karenin asıl öznesinin yüzü görünmüyorsa (ör. sırtı dönük oyuncuya odaklı kare)
-# yukarıdaki göreli kıyas işe yaramaz — kenardaki bulanık yüz tek/en belirgin yüz kalır ve o oyuncunun
-# klasörüne girerdi. Burada yüz, KARENİN kendi odak seviyesiyle (en net karo dilimi) kıyaslanır. Eleme için
-# dördü birden gerekir (yanlış eleme riskini azaltmak için): kenara yakın, küçük, sahne odağına göre çok bulanık.
-DEFOCUS_EDGE_FILTER = True
-DEFOCUS_EDGE_MIN_DIST = 0.60         # kare merkezinden normalize uzaklık (0 merkez, ~1 köşe) en az bu kadar
-DEFOCUS_EDGE_MAX_SIDE_REL = 0.06     # yüzün kısa kenarı, karenin genişliğinin en çok bu oranı kadar
-DEFOCUS_EDGE_MAX_SHARP_REL = 0.10    # yüz netliği / karenin odak seviyesi bunun altında olmalı
 
 # Kaleci havuzu - bu isimlerden biriyle eşleşen herkes ayrı klasör yerine
 # doğrudan KALECILER klasörüne kopyalanır.
@@ -538,34 +529,6 @@ def face_quality_score(face, img, match_score: float = 0.0) -> float:
         return 0.0
 
 
-def scene_focus_level(img) -> float:
-    """Karenin odak seviyesi: fotoğraf ~1000 piksele küçültülüp 48 px'lik karolara bölünür; karoların Laplacian
-    varyansının %95'lik dilimi (en net bölgeler = fotoğrafın odaklandığı yer) döner."""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape[:2]
-    k = 1000.0 / max(h, w)
-    if k < 1.0:
-        gray = cv2.resize(gray, (max(1, int(w * k)), max(1, int(h * k))), interpolation=cv2.INTER_AREA)
-    th = 48
-    vals = []
-    for y in range(0, gray.shape[0] - th + 1, th):
-        for x in range(0, gray.shape[1] - th + 1, th):
-            vals.append(cv2.Laplacian(gray[y:y + th, x:x + th], cv2.CV_64F).var())
-    return float(np.percentile(vals, 95)) if vals else 0.0
-
-
-def is_defocused_edge_face(face, img, metric=None) -> bool:
-    """Kenardaki, küçük ve karenin odağına göre çok bulanık yüz mü? (bkz. DEFOCUS_EDGE_* sabitleri)"""
-    if not DEFOCUS_EDGE_FILTER:
-        return False
-    sharp, side, dist = metric or face_focus_metrics(face, img)
-    w_img = img.shape[1]
-    if dist < DEFOCUS_EDGE_MIN_DIST or side / float(w_img) > DEFOCUS_EDGE_MAX_SIDE_REL:
-        return False            # ucuz ön koşullar: çoğu yüz burada elenir, sahne taraması yapılmaz
-    level = scene_focus_level(img)
-    return level > 0 and (sharp / level) < DEFOCUS_EDGE_MAX_SHARP_REL
-
-
 def find_background_faces(faces, img) -> set:
     """
     ODAK DIŞI / ARKA PLAN YÜZLERİ: Karede birden fazla yüz varken, fotoğrafın asıl öznesi olmayan
@@ -576,16 +539,12 @@ def find_background_faces(faces, img) -> set:
     arka plan sayılır. En belirgin ("odak") yüz hiçbir zaman elenmez; tek yüzlü karede hiçbir şey elenmez.
     """
     if len(faces) < 2:
-        if faces and is_defocused_edge_face(faces[0], img):
-            return {0}
         return set()
     metrics = [face_focus_metrics(f, img) for f in faces]
     max_sharp = max(m[0] for m in metrics) or 1.0
     max_side = max(m[1] for m in metrics) or 1.0
     anchor = max(range(len(faces)), key=lambda i: metrics[i][0] * metrics[i][1] ** 2)
     skipped = set()
-    if is_defocused_edge_face(faces[anchor], img, metrics[anchor]):
-        skipped.add(anchor)      # en belirgin yüz bile kenarda ve odak dışıysa özne değildir
     for i, (sharp, side, dist) in enumerate(metrics):
         if i == anchor:
             continue
@@ -638,7 +597,7 @@ def identify_all_faces(faces, img, ref_db: dict, threshold: float, margin: float
     if matches:
         return matches, None, 0.0, len(skipped)
     if not rejected:
-        return {}, ("odak dışı / arka plan yüz" if skipped else "yüz bulunamadı"), 0.0, len(skipped)
+        return {}, "yüz bulunamadı", 0.0, len(skipped)
     _, score, reason, cands = max(rejected, key=lambda r: r[0])
     if info is not None:
         info["candidates"] = cands
