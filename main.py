@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.7.8"
+APP_VERSION = "1.7.9"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Düzeltmeler: \"Di̇jksteel\" / \"Hulusi̇\" gibi bozuk yazılan oyuncu klasör adları düzeldi (Dijksteel tek klasörde birleşir); kopyalama hatalarında otomatik yeniden deneme."
+UPDATE_NOTES = "Klasör adları değişti: kaleciler \"KALECİLER (KEEPER)\", eşleşmeyenler \"DAHA FAZLASI (MORE)\". Eski günlerin klasörleri (KALECILER / KARISIK) İnceleme ve Paylaşım'da hâlâ tanınır."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -260,8 +260,32 @@ GOALKEEPER_POOL = {
     "SERHAT",
 }
 
-MIXED_FOLDER_NAME = "KARISIK"
-GOALKEEPER_FOLDER_NAME = "KALECILER"
+MIXED_FOLDER_NAME = "DAHA FAZLASI (MORE)"
+GOALKEEPER_FOLDER_NAME = "KALECİLER (KEEPER)"
+# Eski sürümlerin çıktı klasörlerindeki adlar: eski günlerin klasörleri İnceleme/Paylaşım'da hâlâ tanınsın
+LEGACY_MIXED_FOLDER_NAMES = ("KARISIK",)
+LEGACY_GOALKEEPER_FOLDER_NAMES = ("KALECILER",)
+GOALKEEPER_FOLDER_NAMES = (GOALKEEPER_FOLDER_NAME,) + LEGACY_GOALKEEPER_FOLDER_NAMES
+
+
+def special_dir(root: str, new_name: str, legacy_names: tuple) -> str:
+    """Çıktı klasöründeki özel klasörün yolu: yeni ad varsa o, yoksa eski adla var olan (eski günler), yoksa yeni ad."""
+    p = os.path.join(root, new_name)
+    if os.path.isdir(p):
+        return p
+    for old in legacy_names:
+        q = os.path.join(root, old)
+        if os.path.isdir(q):
+            return q
+    return p
+
+
+def mixed_dir_of(root: str) -> str:
+    return special_dir(root, MIXED_FOLDER_NAME, LEGACY_MIXED_FOLDER_NAMES)
+
+
+def keeper_dir_of(root: str) -> str:
+    return special_dir(root, GOALKEEPER_FOLDER_NAME, LEGACY_GOALKEEPER_FOLDER_NAMES)
 
 TURKISH_MONTHS = {
     1: "Ocak", 2: "Şubat", 3: "Mart", 4: "Nisan", 5: "Mayıs", 6: "Haziran",
@@ -2858,7 +2882,7 @@ PAGE_META = [
 REPORT_HEADER = ["Dosya", "Sonuç", "Oyuncu", "Skor", "Not", "Kalite", "Adaylar", "Konum"]
 SELECTION_FOLDER_NAME = "SECILENLER"
 SOCIAL_FOLDER_NAME = "SOSYAL"
-SPECIAL_FOLDERS = {MIXED_FOLDER_NAME, SELECTION_FOLDER_NAME, SOCIAL_FOLDER_NAME}
+SPECIAL_FOLDERS = {MIXED_FOLDER_NAME, *LEGACY_MIXED_FOLDER_NAMES, SELECTION_FOLDER_NAME, SOCIAL_FOLDER_NAME}
 DEFAULT_BEST_COUNT = 5
 REVIEW_LOW_SCORE = 0.45   # bu skorun altındaki eşleşmeler "düşük güvenli" sayılıp incelemeye düşer
 DEFAULT_SHARE_MESSAGE = ("Merhaba {ad}, {etkinlik} fotoğrafların hazır ({adet} kare). "
@@ -3135,9 +3159,9 @@ def report_row_path(root: str, row: dict) -> str:
     name = row.get("Dosya", "")
     res = row.get("Sonuç", "")
     if res.startswith("Karışık"):
-        cands = [os.path.join(root, MIXED_FOLDER_NAME, name)]
+        cands = [os.path.join(root, d, name) for d in (MIXED_FOLDER_NAME, *LEGACY_MIXED_FOLDER_NAMES)]
     elif res.startswith("Kaleci"):
-        cands = [os.path.join(root, GOALKEEPER_FOLDER_NAME, name)]
+        cands = [os.path.join(root, d, name) for d in GOALKEEPER_FOLDER_NAMES]
     else:
         cands = [os.path.join(root, row.get("Oyuncu", ""), name)]
     for c in cands:
@@ -3183,9 +3207,9 @@ def build_share_entries(root: str) -> list:
     has_keeper_rows = bool(keeper_names)
     for name in os.listdir(root):
         p = os.path.join(root, name)
-        if not os.path.isdir(p) or name in SPECIAL_FOLDERS:
+        if not os.path.isdir(p) or fix_person_name(name) in SPECIAL_FOLDERS:
             continue
-        if name == GOALKEEPER_FOLDER_NAME and has_keeper_rows:
+        if fix_person_name(name) in GOALKEEPER_FOLDER_NAMES and has_keeper_rows:
             continue  # kaleciler aşağıda tek tek eklenir
         best_path = os.path.join(root, SELECTION_FOLDER_NAME, name)
         entries.append({"name": name, "path": p, "count": count_images(p),
@@ -3193,7 +3217,7 @@ def build_share_entries(root: str) -> list:
     for name, cnt in keeper_names.items():
         best_path = os.path.join(root, SELECTION_FOLDER_NAME, name)
         entries.append({"name": name, "path": best_path if os.path.isdir(best_path)
-                        else os.path.join(root, GOALKEEPER_FOLDER_NAME),
+                        else keeper_dir_of(root),
                         "count": cnt, "best": count_images(best_path), "best_path": best_path, "keeper": True})
     entries.sort(key=lambda e: turkish_lower(e["name"]))
     return entries
@@ -3770,7 +3794,7 @@ class ReviewPage(QWidget):
         names = set(load_reference_counts(self.win.ref_folder).keys())
         if self.root:
             for e in build_share_entries(self.root):
-                if e["name"] != GOALKEEPER_FOLDER_NAME:
+                if fix_person_name(e["name"]) not in GOALKEEPER_FOLDER_NAMES:
                     names.add(e["name"])
         self.names = sorted(names, key=turkish_lower)
         self.combo.clear()
@@ -3855,7 +3879,7 @@ class ReviewPage(QWidget):
             b.clicked.connect(lambda: self._assign(player))
             self.cand_box.addWidget(b)
             self.note.setText("Sistem bu fotoğrafı düşük güvenle bu oyuncuya vermişti. Yanlışsa aşağıdan doğru oyuncuyu seç ya da 'Hiçbiri'.")
-            self.none_btn.setText("Hiçbiri → KARISIK'a al  (X)")
+            self.none_btn.setText("Hiçbiri → DAHA FAZLASI klasörüne al  (X)")
         else:
             cands = parse_candidates(row["Adaylar"])
             if cands:
@@ -3958,7 +3982,7 @@ class ReviewPage(QWidget):
         idx = self.queue[self.pos]
         old = dict(row)
         gk = {strip_accents_upper(g) for g in GOALKEEPER_POOL}
-        dest_dir = os.path.join(self.root, GOALKEEPER_FOLDER_NAME if strip_accents_upper(player) in gk else player)
+        dest_dir = keeper_dir_of(self.root) if strip_accents_upper(player) in gk else os.path.join(self.root, player)
         moved = os.path.abspath(os.path.dirname(src)) != os.path.abspath(dest_dir)
         new = src
         try:
@@ -3988,7 +4012,7 @@ class ReviewPage(QWidget):
         new, moved = src, False
         if self.filter == self.FILTER_LOW:
             try:
-                dest_dir = os.path.join(self.root, MIXED_FOLDER_NAME)
+                dest_dir = mixed_dir_of(self.root)
                 os.makedirs(dest_dir, exist_ok=True)
                 new = unique_destination_path(dest_dir, os.path.basename(src))
                 shutil.move(src, new)
@@ -4662,9 +4686,9 @@ class SharePage(QWidget):
             mixed = sum(1 for r in rows if r["Sonuç"].startswith("Karışık"))
         else:
             for e in build_share_entries(self.root):
-                if e["name"] != GOALKEEPER_FOLDER_NAME:
+                if fix_person_name(e["name"]) not in GOALKEEPER_FOLDER_NAMES:
                     counts[e["name"]] = e["count"]
-            mixed = count_images(os.path.join(self.root, MIXED_FOLDER_NAME))
+            mixed = count_images(mixed_dir_of(self.root))
         ref_counts = load_reference_counts(self.win.ref_folder)
         for n in ref_counts:
             counts.setdefault(n, 0)
