@@ -154,9 +154,9 @@ APP_TITLE = "Kocaelispor Medya Departmanı — Foto Ayıklama Sistemi"
 # --- Otomatik güncelleme ------------------------------------------------------------------
 # Bu sürüm numarasını her yeni özellik/düzeltmede bir artır (örn. "1.0.1").
 # GitHub Releases'teki en son "v<sürüm>" etiketiyle karşılaştırılır.
-APP_VERSION = "1.7.7"
+APP_VERSION = "1.7.8"
 # Yeni sürümde ne değişti (güncelleme penceresinde gösterilir; tek satır, Python metni):
-UPDATE_NOTES = "Yeni antrenman programları eklendi: 13. hafta Çorum FK (25–30 Kasım) ve 14. hafta Erzurumspor FK (1–8 Aralık)."
+UPDATE_NOTES = "Düzeltmeler: \"Di̇jksteel\" / \"Hulusi̇\" gibi bozuk yazılan oyuncu klasör adları düzeldi (Dijksteel tek klasörde birleşir); kopyalama hatalarında otomatik yeniden deneme."
 # Bu kod, paketlenmiş uygulamanın (launcher.py) en az hangi "paket sürümü"nü gerektiriyor?
 # Yeni bir kütüphane/paketleme değişikliği gerekirse artır; eski paket güncellemeyi uygulamaz,
 # "yeniden kur" der (bash build_mac.sh).
@@ -326,16 +326,31 @@ def strip_accents_upper(text: str) -> str:
     return text
 
 
+def fix_person_name(name: str) -> str:
+    """macOS dosya adlarındaki ayrışık Unicode'u (I + birleşik nokta U+0307) toparlar: "Di̇jksteel" → "Dijksteel"."""
+    import unicodedata as _ud
+    n = _ud.normalize("NFC", name or "")
+    return n.replace("i\u0307", "i").replace("\u0307", "")
+
+
+def merge_ref_names(ref_db: dict) -> dict:
+    """Önbellekten gelen referans veritabanında bozuk yazılmış oyuncu adlarını düzeltir; aynı kişiye ait olanları birleştirir."""
+    out = {}
+    for key, vecs in ref_db.items():
+        out.setdefault(fix_person_name(key), []).extend(list(vecs))
+    return out
+
+
 def clean_reference_name(filename_stem: str) -> str:
     """
     Referans dosya adlarını temizleyip ortak oyuncu ismine indirger.
     Örn:  can_1 -> Can | can 2 -> Can | serdar_2 -> Serdar | Can-3 -> Can
     """
-    name = filename_stem.strip()
+    name = fix_person_name(filename_stem).strip()
     name = re.sub(r"[_\-]+", " ", name)                 # alt tire/tire -> boşluk
     name = re.sub(r"\s*\d+\s*$", "", name)               # sondaki sayıyı temizle
     name = re.sub(r"\s+", " ", name).strip()
-    return turkish_title(name)
+    return fix_person_name(turkish_title(name))
 
 
 def get_desktop_path() -> str:
@@ -890,7 +905,7 @@ class ReferenceManager:
                     self.log("Referans klasörü değişmiş (ya da önbellek eski sürüm), yeniden hesaplanıyor...",
                              "info")
                     return self._build_from_scratch(ref_folder, cache_path)
-                ref_db = cache_data["ref_db"]
+                ref_db = merge_ref_names(cache_data["ref_db"])
                 if not ref_db:
                     self.log("Önbellek boş (önceki hatalı çalıştırmadan kalmış olabilir), yeniden hesaplanıyor...",
                               "warn")
@@ -1229,9 +1244,21 @@ class ExtractionWorker(QThread):
 
     @staticmethod
     def _copy_to(src_path: str, dest_dir: str, filename: str) -> str:
-        dest_path = unique_destination_path(dest_dir, filename)
-        shutil.copy2(src_path, dest_path)  # metadata korunarak kopyalama
-        return dest_path
+        """Kopyalar; geçici hatalarda (klasör o an yok / iCloud Masaüstü eşitlemesi / disk gecikmesi) klasörü
+        yeniden oluşturup birkaç kez dener — rapordaki 'No such file or directory' hatalarına karşı."""
+        last_err = None
+        for attempt in range(4):
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+                dest_path = unique_destination_path(dest_dir, filename)
+                shutil.copy2(src_path, dest_path)  # metadata korunarak kopyalama
+                return dest_path
+            except FileNotFoundError as e:
+                last_err = e
+                if not os.path.exists(src_path):
+                    raise            # kaynak gerçekten yok: yeniden denemenin anlamı yok
+                time.sleep(0.4 * (attempt + 1))
+        raise last_err
 
 
 
